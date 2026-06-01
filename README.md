@@ -64,12 +64,16 @@ The [MagicBlock VRF quickstart](https://docs.magicblock.gg/pages/verifiable-rand
    }
    ```
 
-5. Consume randomness only in a callback that validates the VRF signer:
+5. Consume randomness only in a callback that validates the VRF signer. This is where your app actually uses the random bytes: convert them into a domain value, then update program state.
 
    ```rust
    pub fn callback_roll_dice(ctx: Context<CallbackRollDiceCtx>, randomness: [u8; 32]) -> Result<()> {
-       ctx.accounts.player.last_result =
-           ephemeral_vrf_sdk::rnd::random_u8_with_range(&randomness, 1, 6);
+       let roll = ephemeral_vrf_sdk::rnd::random_u8_with_range(&randomness, 1, 6);
+       let player = &mut ctx.accounts.player;
+
+       player.last_result = roll;
+       msg!("VRF dice roll: {}", roll);
+
        Ok(())
    }
 
