@@ -3,6 +3,91 @@
 **EphemeralVrf** is a Verifiable Random Function (VRF) implementation for Solana that provides secure, verifiable randomness for decentralized applications.
 It uses a network of oracles to generate and verify random values on-chain.
 
+**Start here:** read the [MagicBlock Solana VRF docs](https://docs.magicblock.gg/pages/verifiable-randomness-functions-vrfs/introduction/solana-vrf) for the end-to-end integration flow.
+
+## Security and trust
+
+- **Audit:** [2025-08-06 VRF Program Audit Report by Zenith](security_audits/2025-08-06%20VRF%20Program%20Audit%20Report%20by%20Zenith.pdf).
+- **Standards-based design:** the implementation follows [RFC 9381](https://datatracker.ietf.org/doc/html/rfc9381), using Curve25519's Ristretto group and Schnorr-like proof verification.
+
+## Quick integration flow
+
+The [MagicBlock VRF quickstart](https://docs.magicblock.gg/pages/verifiable-randomness-functions-vrfs/how-to-guide/quickstart#2-request-%26-consume-randomness) uses a simple request-and-callback pattern: your program requests randomness, names the callback instruction, and then consumes verified randomness in that callback.
+
+1. Add the SDK with Anchor support:
+
+   ```toml
+   ephemeral-vrf-sdk = { version = "0.3.0", features = ["anchor"] }
+   ```
+
+2. Import the VRF macro, instruction helper, request params, and callback account metadata:
+
+   ```rust
+   use ephemeral_vrf_sdk::anchor::vrf;
+   use ephemeral_vrf_sdk::instructions::{create_request_randomness_ix, RequestRandomnessParams};
+   use ephemeral_vrf_sdk::types::SerializableAccountMeta;
+   ```
+
+3. Request randomness from a normal instruction and point the VRF program at your callback:
+
+   ```rust
+   let ix = create_request_randomness_ix(RequestRandomnessParams {
+       payer: ctx.accounts.payer.key(),
+       oracle_queue: ctx.accounts.oracle_queue.key(),
+       callback_program_id: ID,
+       callback_discriminator: instruction::CallbackRollDice::DISCRIMINATOR.to_vec(),
+       caller_seed: [client_seed; 32],
+       accounts_metas: Some(vec![SerializableAccountMeta {
+           pubkey: ctx.accounts.player.key(),
+           is_signer: false,
+           is_writable: true,
+       }]),
+       ..Default::default()
+   });
+
+   ctx.accounts.invoke_signed_vrf(&ctx.accounts.payer.to_account_info(), &ix)?;
+   ```
+
+4. Add `#[vrf]` to the request context so `invoke_signed_vrf` is available, and select the queue for your execution path:
+
+   ```rust
+   #[vrf]
+   #[derive(Accounts)]
+   pub struct RollDiceCtx<'info> {
+       #[account(mut)]
+       pub payer: Signer<'info>,
+       #[account(mut)]
+       pub player: Account<'info, Player>,
+       /// CHECK: Oracle queue
+       #[account(mut, address = ephemeral_vrf_sdk::consts::DEFAULT_QUEUE)]
+       pub oracle_queue: AccountInfo<'info>,
+   }
+   ```
+
+5. Consume randomness only in a callback that validates the VRF signer. This is where your app actually uses the random bytes: convert them into a domain value, then update program state.
+
+   ```rust
+   pub fn callback_roll_dice(ctx: Context<CallbackRollDiceCtx>, randomness: [u8; 32]) -> Result<()> {
+       let roll = ephemeral_vrf_sdk::rnd::random_u8_with_range(&randomness, 1, 6);
+       let player = &mut ctx.accounts.player;
+
+       player.last_result = roll;
+       msg!("VRF dice roll: {}", roll);
+
+       Ok(())
+   }
+
+   #[derive(Accounts)]
+   pub struct CallbackRollDiceCtx<'info> {
+       #[account(address = ephemeral_vrf_sdk::consts::VRF_PROGRAM_IDENTITY)]
+       pub vrf_program_identity: Signer<'info>,
+       #[account(mut)]
+       pub player: Account<'info, Player>,
+   }
+   ```
+
+Use `DEFAULT_EPHEMERAL_QUEUE` for delegated Ephemeral Rollup programs, or `DEFAULT_QUEUE` for regular base-layer requests. See the [integration test program](program/tests/integration/use-randomness/programs/use-randomness/src/lib.rs) for a minimal working example, or the MagicBlock Engine [roll-dice example](https://github.com/magicblock-labs/magicblock-engine-examples/tree/main/roll-dice) for a full app integration.
+
 ## Overview
 
 EphemeralVrf enables dApps to request unpredictable, tamper-resistant random values that can be verified by anyone.
@@ -100,10 +185,6 @@ The security of the VRF relies on the hardness of the **Discrete Logarithm Probl
 3. **Binding**: The output is bound to the input, ensuring that the same input always produces the same output and proof.
 4. **Non-malleability**: The proof cannot be altered or manipulated without invalidating the verification.
 
-## Warning
-
-The code is not audited and should not be used in production environments without thorough testing and security analysis.
-
 ## Get started
 
 Compile your program:
@@ -135,7 +216,3 @@ cargo run --bin vrf-cli -- --help
 ## Example Usage
 
 See the [integration tests](program/tests/integration/use-randomness/programs/use-randomness/src/lib.rs) for example usage of the program.
-
-## Audit Report
-
-See Audit Report by [Zenith](security_audits/2025-08-06%20VRF%20Program%20Audit%20Report%20by%20Zenith.pdf)
