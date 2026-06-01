@@ -10,38 +10,75 @@ It uses a network of oracles to generate and verify random values on-chain.
 - **Audit:** [2025-08-06 VRF Program Audit Report by Zenith](security_audits/2025-08-06%20VRF%20Program%20Audit%20Report%20by%20Zenith.pdf).
 - **Standards-based design:** the implementation follows [RFC 9381](https://datatracker.ietf.org/doc/html/rfc9381), using Curve25519's Ristretto group and Schnorr-like proof verification.
 
-## Anchor integration
+## Quick integration flow
 
-1. Add the SDK:
+The [MagicBlock VRF quickstart](https://docs.magicblock.gg/pages/verifiable-randomness-functions-vrfs/how-to-guide/quickstart#2-request-%26-consume-randomness) uses a simple request-and-callback pattern: your program requests randomness, names the callback instruction, and then consumes verified randomness in that callback.
+
+1. Add the SDK with Anchor support:
 
    ```toml
    ephemeral-vrf-sdk = { version = "0.3.0", features = ["anchor"] }
    ```
 
-2. Request randomness and point the VRF program at your callback:
+2. Import the VRF macro, instruction helper, request params, and callback account metadata:
 
    ```rust
+   use ephemeral_vrf_sdk::anchor::vrf;
    use ephemeral_vrf_sdk::instructions::{create_request_randomness_ix, RequestRandomnessParams};
+   use ephemeral_vrf_sdk::types::SerializableAccountMeta;
+   ```
 
+3. Request randomness from a normal instruction and point the VRF program at your callback:
+
+   ```rust
    let ix = create_request_randomness_ix(RequestRandomnessParams {
        payer: ctx.accounts.payer.key(),
        oracle_queue: ctx.accounts.oracle_queue.key(),
        callback_program_id: ID,
-       callback_discriminator: instruction::ConsumeRandomness::DISCRIMINATOR.to_vec(),
-       caller_seed,
+       callback_discriminator: instruction::CallbackRollDice::DISCRIMINATOR.to_vec(),
+       caller_seed: [client_seed; 32],
+       accounts_metas: Some(vec![SerializableAccountMeta {
+           pubkey: ctx.accounts.player.key(),
+           is_signer: false,
+           is_writable: true,
+       }]),
        ..Default::default()
    });
 
    ctx.accounts.invoke_signed_vrf(&ctx.accounts.payer.to_account_info(), &ix)?;
    ```
 
-3. Consume the callback only after validating the VRF signer:
+4. Add `#[vrf]` to the request context so `invoke_signed_vrf` is available, and select the queue for your execution path:
 
    ```rust
+   #[vrf]
    #[derive(Accounts)]
-   pub struct ConsumeRandomnessCtx<'info> {
+   pub struct RollDiceCtx<'info> {
+       #[account(mut)]
+       pub payer: Signer<'info>,
+       #[account(mut)]
+       pub player: Account<'info, Player>,
+       /// CHECK: Oracle queue
+       #[account(mut, address = ephemeral_vrf_sdk::consts::DEFAULT_QUEUE)]
+       pub oracle_queue: AccountInfo<'info>,
+   }
+   ```
+
+5. Consume randomness only in a callback that validates the VRF signer:
+
+   ```rust
+   pub fn callback_roll_dice(ctx: Context<CallbackRollDiceCtx>, randomness: [u8; 32]) -> Result<()> {
+       ctx.accounts.player.last_result =
+           ephemeral_vrf_sdk::rnd::random_u8_with_range(&randomness, 1, 6);
+       Ok(())
+   }
+
+   #[derive(Accounts)]
+   pub struct CallbackRollDiceCtx<'info> {
        #[account(address = ephemeral_vrf_sdk::consts::VRF_PROGRAM_IDENTITY)]
        pub vrf_program_identity: Signer<'info>,
+       #[account(mut)]
+       pub player: Account<'info, Player>,
    }
    ```
 
