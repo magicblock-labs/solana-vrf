@@ -109,10 +109,7 @@ pub mod use_randomness {
         );
         msg!("Consuming random bool: {:?}", random_bool(&randomness));
         if !ctx.remaining_accounts.is_empty() {
-            msg!(
-                "First remaining account: {:?}",
-                ctx.remaining_accounts.first()
-            );
+            msg!("First remaining account: {:?}", ctx.remaining_accounts.first());
             assert!(ctx.remaining_accounts.first().unwrap().is_writable);
         }
         Ok(())

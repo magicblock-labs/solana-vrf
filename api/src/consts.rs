@@ -35,14 +35,3 @@ pub const DEFAULT_EPHEMERAL_QUEUE: Pubkey = pubkey!("5hBR571xnXppuCPveTrctfTU7tJ
 #[cfg(feature = "ephemeral-test-queue")]
 pub const DEFAULT_EPHEMERAL_TEST_QUEUE: Pubkey =
     pubkey!("Sc9MJUngNbQXSXGP3F67KvKwVnhaYn6kcioxXNVowYT");
-
-pub fn is_fee_exempt_ephemeral_queue(queue: &Pubkey) -> bool {
-    if queue == &DEFAULT_EPHEMERAL_QUEUE {
-        return true;
-    }
-    #[cfg(feature = "ephemeral-test-queue")]
-    if queue == &DEFAULT_EPHEMERAL_TEST_QUEUE {
-        return true;
-    }
-    false
-}

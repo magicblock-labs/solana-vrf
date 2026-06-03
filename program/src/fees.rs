@@ -1,5 +1,23 @@
+use ephemeral_vrf_api::consts::DEFAULT_EPHEMERAL_QUEUE;
+#[cfg(feature = "ephemeral-test-queue")]
+use ephemeral_vrf_api::consts::DEFAULT_EPHEMERAL_TEST_QUEUE;
 use solana_program::account_info::AccountInfo;
 use solana_program::program_error::ProgramError;
+use solana_program::pubkey::Pubkey;
+
+/// Whether `queue` is exempt from the per-request fee (and the matching oracle payout).
+/// `DEFAULT_EPHEMERAL_QUEUE` is always exempt; the local test queue only with the
+/// `ephemeral-test-queue` feature, so production builds never exempt it.
+pub fn is_fee_exempt_ephemeral_queue(queue: &Pubkey) -> bool {
+    if queue == &DEFAULT_EPHEMERAL_QUEUE {
+        return true;
+    }
+    #[cfg(feature = "ephemeral-test-queue")]
+    if queue == &DEFAULT_EPHEMERAL_TEST_QUEUE {
+        return true;
+    }
+    false
+}
 
 // Transfer a specific amount of lamports from the oracle queue account to the oracle account.
 // Assumes caller already validated seeds/ownership/writability and any signer requirements.

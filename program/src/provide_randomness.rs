@@ -156,7 +156,7 @@ pub fn process_provide_randomness(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
     solana_program::program::invoke_signed(&ix, &all_accounts, pda_signer_seeds)?;
 
     // Collect the fees (unless this is a fee-exempt ephemeral queue)
-    if !is_fee_exempt_ephemeral_queue(oracle_queue_info.key) {
+    if !crate::fees::is_fee_exempt_ephemeral_queue(oracle_queue_info.key) {
         let cost = if removed_item.priority_request == 1 {
             VRF_HIGH_PRIORITY_LAMPORTS_COST
         } else {
