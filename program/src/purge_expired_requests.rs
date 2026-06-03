@@ -68,7 +68,7 @@ pub fn process_purge_expired_requests(accounts: &[AccountInfo<'_>], data: &[u8])
     // The oracle also accrue fees on malformed/expired requests to
     // 1) incentivize queue cleaning and
     // 2) disincentivize creation of malformed requests
-    if total_cost > 0 && oracle_queue_info.key.ne(&DEFAULT_EPHEMERAL_QUEUE) {
+    if total_cost > 0 && !is_fee_exempt_ephemeral_queue(oracle_queue_info.key) {
         crate::fees::transfer_fee(oracle_queue_info, oracle_info, total_cost)?;
     }
 

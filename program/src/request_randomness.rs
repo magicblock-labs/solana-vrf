@@ -124,8 +124,8 @@ pub fn process_request_randomness(
         )?;
     }
 
-    // Transfer request cost to the queue PDA (unless we are using the default ephemeral queue)
-    if oracle_queue_info.key.ne(&DEFAULT_EPHEMERAL_QUEUE) {
+    // Transfer request cost to the queue PDA (unless this is a fee-exempt ephemeral queue)
+    if !is_fee_exempt_ephemeral_queue(oracle_queue_info.key) {
         let cost = if high_priority {
             VRF_HIGH_PRIORITY_LAMPORTS_COST
         } else {

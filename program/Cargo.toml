@@ -17,6 +17,7 @@ crate-type = ["cdylib", "lib"]
 default = []
 no-entrypoint = []
 test-sbf = ["ephemeral-vrf-api/unit_test_config"]
+ephemeral-test-queue = ["ephemeral-vrf-api/ephemeral-test-queue"]
 
 [dependencies]
 ephemeral-vrf-api = { workspace = true, features = [] }

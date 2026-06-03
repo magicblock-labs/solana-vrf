@@ -3,4 +3,7 @@
 **.idea
 **.anchor
 **DS_Store
+**/*test-storage*
 
+# Local VRF/ER testing tooling (not for production)
+vrf-local-test/
