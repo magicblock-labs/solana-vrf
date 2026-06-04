@@ -13,6 +13,7 @@ keywords.workspace = true
 [features]
 no-entrypoint = []
 unit_test_config = []
+ephemeral-test-queue = []
 
 
 [dependencies]

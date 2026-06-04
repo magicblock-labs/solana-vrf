@@ -47,3 +47,16 @@ filename = "tests/fixtures/oracle_data.json"
 [[test.validator.account]]
 address = "GKE6d7iv8kCBrsxr78W3xVdjGLLLJnxsGiuzrsZCGEvb"
 filename = "tests/fixtures/oracle_queue.json"
+
+# Delegated (ephemeral) index-1 queue + its delegation record/metadata accounts.
+[[test.validator.account]]
+address = "Sc9MJUngNbQXSXGP3F67KvKwVnhaYn6kcioxXNVowYT"
+filename = "tests/fixtures/oracle_ephemeral_queue.json"
+
+[[test.validator.account]]
+address = "9yvg9551MmE8mhWd88jAPLE3noTXHoopYG1BDhmtkCeR"
+filename = "tests/fixtures/oracle_ephemeral_queue_delegation_record.json"
+
+[[test.validator.account]]
+address = "7L9eCRv52UpGVePGj9P1zop8kzmh4SpYzYn6YhoAKHBg"
+filename = "tests/fixtures/oracle_ephemeral_queue_delegation_metadata.json"

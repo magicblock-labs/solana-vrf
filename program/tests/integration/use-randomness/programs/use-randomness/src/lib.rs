@@ -151,3 +151,5 @@ pub struct ConsumeRandomnessCtx<'info> {
 }
 
 pub const DEFAULT_TEST_QUEUE: Pubkey = pubkey!("GKE6d7iv8kCBrsxr78W3xVdjGLLLJnxsGiuzrsZCGEvb");
+pub const DEFAULT_EPHEMERAL_TEST_QUEUE: Pubkey =
+    pubkey!("Sc9MJUngNbQXSXGP3F67KvKwVnhaYn6kcioxXNVowYT");
