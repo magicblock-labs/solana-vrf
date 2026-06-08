@@ -1,4 +1,6 @@
-use ephemeral_rollups_sdk::cpi::{delegate_account, DelegateAccounts, DelegateConfig};
+use ephemeral_rollups_sdk::cpi::{
+    delegate_account_with_any_validator, DelegateAccounts, DelegateConfig,
+};
 use ephemeral_vrf_api::prelude::*;
 
 /// Process the delegation of an Oracle queue to the delegation program
@@ -63,7 +65,7 @@ pub fn process_delegate_oracle_queue(accounts: &[AccountInfo<'_>], data: &[u8]) 
         commit_frequency_ms: 0,
         validator: Some(system_program::id()),
     };
-    delegate_account(delegate_accounts, pda_seeds, delegate_config)?;
+    delegate_account_with_any_validator(delegate_accounts, pda_seeds, delegate_config)?;
 
     Ok(())
 }
