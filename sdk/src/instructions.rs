@@ -14,6 +14,7 @@ pub struct RequestRandomnessParams {
     pub callback_args: Option<Vec<u8>>,
 }
 
+#[deprecated = "Use the `create_request_randomness_ix` from the `ephemeral-rollups-sdk` crate instead"]
 pub fn create_request_randomness_ix(params: RequestRandomnessParams) -> compat::Instruction {
     let payer = params.payer.modern();
     let oracle_queue = params.oracle_queue.modern();
@@ -45,6 +46,7 @@ pub fn create_request_randomness_ix(params: RequestRandomnessParams) -> compat::
 pub fn create_request_regular_randomness_ix(
     params: RequestRandomnessParams,
 ) -> compat::Instruction {
+    #[allow(deprecated)]
     let mut ix = create_request_randomness_ix(params);
     ix.data[0] = 8;
     ix

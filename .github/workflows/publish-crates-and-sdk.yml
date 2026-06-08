@@ -1,10 +1,10 @@
 name: Publish Crates & SDKs
 on:
   release:
-    types: [ published ]
+    types: [published]
   push:
     branches:
-      - 'release/v*'
+      - "release/v*"
   workflow_dispatch:
 
 env:
@@ -70,12 +70,14 @@ jobs:
         run: |
           if [ "${DRY_RUN}" = "true" ]; then
             cargo publish --dry-run --manifest-path=sdk/vrf-macro/Cargo.toml --token $CRATES_TOKEN --no-verify
+            cargo publish --dry-run --manifest-path=sdk/pinocchio/Cargo.toml --token $CRATES_TOKEN --no-verify
             # Dry-run does not upload the macro crate, so patch crates.io to resolve
             # the SDK's same-version macro dependency from the local workspace.
             cargo publish --dry-run --manifest-path=sdk/Cargo.toml --token $CRATES_TOKEN --no-verify --config 'patch.crates-io.ephemeral-vrf-sdk-vrf-macro.path="sdk/vrf-macro"'
           else
             cargo publish --manifest-path=sdk/vrf-macro/Cargo.toml --token $CRATES_TOKEN
             cargo publish --manifest-path=sdk/Cargo.toml --token $CRATES_TOKEN
+            cargo publish --manifest-path=sdk/pinocchio/Cargo.toml --token $CRATES_TOKEN
           fi
         env:
           CRATES_TOKEN: ${{ secrets.CRATES_TOKEN }}

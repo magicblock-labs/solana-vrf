@@ -120,5 +120,6 @@ jobs:
         run: |
           export PATH="${{ needs.setup.outputs.solana_path }}:$PATH"
           cargo --version
+          cargo test --lib
           cargo test-sbf --version
           cargo test-sbf --features test-sbf
