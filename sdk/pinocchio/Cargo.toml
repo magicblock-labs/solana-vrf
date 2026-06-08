@@ -8,10 +8,6 @@ homepage = { workspace = true }
 edition = { workspace = true }
 license = "MIT"
 
-[features]
-default = []
-backward-compat = []
-
 [dependencies]
 pinocchio = { workspace = true, features = ["cpi"] }
 pinocchio-pubkey = { workspace = true }
