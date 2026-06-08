@@ -3,7 +3,7 @@ resolver = "2"
 members = ["api", "program", "sdk", "src", "vrf", "vrf-cli", "vrf-oracle"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 license = "Business Source License 1.1"
 authors = ["MagicBlock Labs <dev@magicblock.xyz>"]
