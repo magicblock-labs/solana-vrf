@@ -364,8 +364,8 @@ impl ProcessableItem {
             1_000_000
         } else {
             match self.0.priority_request {
-                1 => 300_000,
-                _ => 180_000,
+                1 => 400_000,
+                _ => 300_000,
             }
         };
         let tx = Transaction::new_signed_with_payer(

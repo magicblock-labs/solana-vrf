@@ -2,10 +2,14 @@ use crate::consts::VRF_PREFIX_HASH_TO_SCALAR;
 use crate::prelude::*;
 use curve25519_dalek::Scalar;
 use solana_curve25519::edwards::{validate_edwards, PodEdwardsPoint};
-use solana_curve25519::ristretto::{add_ristretto, multiply_ristretto, PodRistrettoPoint};
+use solana_curve25519::ristretto::{
+    add_ristretto, multiply_ristretto, validate_ristretto, PodRistrettoPoint,
+};
 use solana_curve25519::scalar::PodScalar;
-use solana_program::hash::hash;
+use solana_program::hash::{hash, hashv};
 use solana_program::pubkey::Pubkey;
+
+const HASH_TO_POINT_MAX_ATTEMPTS: u16 = 512;
 
 /// Verify a VRF proof
 ///
@@ -28,7 +32,10 @@ pub fn verify_vrf(
     let (commitment_base_compressed, commitment_hash_compressed, s) = proof;
 
     // Recompute h
-    let h = hash_to_point(input);
+    let h = match hash_to_point(input) {
+        Some(h) => h,
+        None => return false,
+    };
 
     // Recompute challenge
     let challenge_input = [
@@ -85,26 +92,23 @@ pub fn verify_vrf(
     lhs_base == rhs_base && lhs_hash == rhs_hash
 }
 
-/// Hash the input with a prefix, convert the result to a scalar, and multiply it with the base point
+/// Hash the input to a Ristretto point with an unknown discrete log relative to the basepoint.
 ///
 /// Accounts: None
 ///
 /// Requirements: None
 ///
 /// 1. Hash the input with the VRF prefix
-/// 2. Convert the hash to a scalar
-/// 3. Multiply the scalar with the base point
-fn hash_to_point(input: &[u8]) -> PodRistrettoPoint {
-    let hashed_input = hash(
-        [VRF_PREFIX_HASH_TO_POINT.to_vec(), input.to_vec()]
-            .concat()
-            .as_slice(),
-    );
-    multiply_ristretto(
-        &PodScalar(Scalar::from_bytes_mod_order(hashed_input.to_bytes()).to_bytes()),
-        &RISTRETTO_BASEPOINT_POINT,
-    )
-    .expect("Failed to multiply scalar with base point")
+fn hash_to_point(input: &[u8]) -> Option<PodRistrettoPoint> {
+    for counter in 0..HASH_TO_POINT_MAX_ATTEMPTS {
+        let counter_bytes = counter.to_le_bytes();
+        let candidate =
+            PodRistrettoPoint(hashv(&[VRF_PREFIX_HASH_TO_POINT, &counter_bytes, input]).to_bytes());
+        if validate_ristretto(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 /// Convert the input to a scalar using the modulus order of the curve

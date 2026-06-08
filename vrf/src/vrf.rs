@@ -6,7 +6,7 @@ use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use hkdf::Hkdf;
 use sha2::Sha512;
-use solana_sdk::hash::hash;
+use solana_sdk::hash::{hash, hashv};
 use solana_sdk::signature::Keypair;
 
 // Key Generation (done once by the oracle)
@@ -20,14 +20,18 @@ pub fn generate_vrf_keypair(keypair: &Keypair) -> (Scalar, RistrettoPoint) {
     (sk, pk)
 }
 
-// Hash-to-Point using built-in hash_to_group function, plus domain separation
+const HASH_TO_POINT_MAX_ATTEMPTS: u16 = 512;
+
+// Hash-to-Point with an unknown discrete log relative to the basepoint.
 fn hash_to_point(input: &[u8]) -> RistrettoPoint {
-    let hashed_input = hash(
-        [VRF_PREFIX_HASH_TO_POINT.to_vec(), input.to_vec()]
-            .concat()
-            .as_slice(),
-    );
-    Scalar::from_bytes_mod_order(hashed_input.to_bytes()) * RISTRETTO_BASEPOINT_POINT
+    for counter in 0..HASH_TO_POINT_MAX_ATTEMPTS {
+        let counter_bytes = counter.to_le_bytes();
+        let candidate = hashv(&[VRF_PREFIX_HASH_TO_POINT, &counter_bytes, input]);
+        if let Some(point) = CompressedRistretto(candidate.to_bytes()).decompress() {
+            return point;
+        }
+    }
+    panic!("Failed to hash input to a Ristretto point");
 }
 
 // Hash-to-Scalar using built-in hash_to_scalar function, plus domain separation
