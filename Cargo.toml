@@ -29,7 +29,7 @@ clap = { version = "4.4", features = ["derive", "env"] }
 crossbeam-channel = "0.5.15"
 curve25519-dalek = { version = "4.1.3", default-features = false }
 env_logger = "0.11.7"
-ephemeral-rollups-sdk = { git = "https://github.com/magicblock-labs/ephemeral-rollups-sdk.git", rev = "30866291a6bbc6c620941beeabcc8b70fae0ea8e" }
+ephemeral-rollups-sdk = "0.15.1"
 ephemeral-vrf = { path = "./vrf" }
 ephemeral-vrf-api = { path = "./api" }
 ephemeral-vrf-sdk-vrf-macro = { path = "sdk/vrf-macro", version = "0.3.0" }

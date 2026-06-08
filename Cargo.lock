@@ -2269,8 +2269,9 @@ dependencies = [
 
 [[package]]
 name = "ephemeral-rollups-sdk"
-version = "0.14.4"
-source = "git+https://github.com/magicblock-labs/ephemeral-rollups-sdk.git?rev=30866291a6bbc6c620941beeabcc8b70fae0ea8e#30866291a6bbc6c620941beeabcc8b70fae0ea8e"
+version = "0.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34f94d80d3fbcc24d5834fda959f885f80ca1e15689de9f2bcfab20ff4557cac"
 dependencies = [
  "base64ct",
  "bincode",
@@ -2294,8 +2295,9 @@ dependencies = [
 
 [[package]]
 name = "ephemeral-rollups-sdk-attribute-action"
-version = "0.14.4"
-source = "git+https://github.com/magicblock-labs/ephemeral-rollups-sdk.git?rev=30866291a6bbc6c620941beeabcc8b70fae0ea8e#30866291a6bbc6c620941beeabcc8b70fae0ea8e"
+version = "0.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a6a2f42ff978cac93f98839d622e7c597d996a31c48e2b18b418ec7aa6a7fed"
 dependencies = [
  "quote",
  "syn 1.0.109",
@@ -2303,8 +2305,9 @@ dependencies = [
 
 [[package]]
 name = "ephemeral-rollups-sdk-attribute-commit"
-version = "0.14.4"
-source = "git+https://github.com/magicblock-labs/ephemeral-rollups-sdk.git?rev=30866291a6bbc6c620941beeabcc8b70fae0ea8e#30866291a6bbc6c620941beeabcc8b70fae0ea8e"
+version = "0.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9fb6bb9eb10886deb06f0c0f0127f6e27577b837c4bc48c69406ace20bc9f239"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2313,8 +2316,9 @@ dependencies = [
 
 [[package]]
 name = "ephemeral-rollups-sdk-attribute-delegate"
-version = "0.14.4"
-source = "git+https://github.com/magicblock-labs/ephemeral-rollups-sdk.git?rev=30866291a6bbc6c620941beeabcc8b70fae0ea8e#30866291a6bbc6c620941beeabcc8b70fae0ea8e"
+version = "0.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e067c3210fc756a7bc536f61024d9cf6ef8cec58430929930b0a7b2d3a329590"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2323,8 +2327,9 @@ dependencies = [
 
 [[package]]
 name = "ephemeral-rollups-sdk-attribute-ephemeral"
-version = "0.14.4"
-source = "git+https://github.com/magicblock-labs/ephemeral-rollups-sdk.git?rev=30866291a6bbc6c620941beeabcc8b70fae0ea8e#30866291a6bbc6c620941beeabcc8b70fae0ea8e"
+version = "0.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fc911b2f6e9941ea6ac7c5e2a67bab32f2aaca8ac29dcc36ed04e4525dea526"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2333,8 +2338,9 @@ dependencies = [
 
 [[package]]
 name = "ephemeral-rollups-sdk-attribute-ephemeral-accounts"
-version = "0.14.4"
-source = "git+https://github.com/magicblock-labs/ephemeral-rollups-sdk.git?rev=30866291a6bbc6c620941beeabcc8b70fae0ea8e#30866291a6bbc6c620941beeabcc8b70fae0ea8e"
+version = "0.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fbedf25b41371dc745ebd12797b10a311275e577453962815477c0389bdb5343"
 dependencies = [
  "proc-macro2",
  "quote",
