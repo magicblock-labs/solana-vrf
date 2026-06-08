@@ -14,7 +14,7 @@ pub const IDENTITY: &[u8] = b"identity";
 /// Seed of the queue account PDA.
 pub const QUEUE: &[u8] = b"queue";
 pub const VRF_PREFIX_CHALLENGE: &[u8] = b"VRF-Ephem-Challenge";
-pub const VRF_PREFIX_HASH_TO_POINT: &[u8] = b"VRF-Ephem-HashToPoint";
+pub const VRF_PREFIX_HASH_TO_POINT: &[u8] = b"VRF-Ephem-v2-HashToRistretto";
 pub const VRF_PREFIX_HASH_TO_SCALAR: &[u8] = b"VRF-Ephem-HashToScalar";
 
 pub const VRF_HIGH_PRIORITY_LAMPORTS_COST: u64 = 800000;
