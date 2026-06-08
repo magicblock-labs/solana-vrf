@@ -10,6 +10,11 @@ It uses a network of oracles to generate and verify random values on-chain.
 - **Audit:** [2025-08-06 VRF Program Audit Report by Zenith](security_audits/2025-08-06%20VRF%20Program%20Audit%20Report%20by%20Zenith.pdf).
 - **Standards-based design:** the implementation follows [RFC 9381](https://datatracker.ietf.org/doc/html/rfc9381), using Curve25519's Ristretto group and Schnorr-like proof verification.
 
+## Examples
+
+- **Minimal local example:** [use-randomness integration test program](program/tests/integration/use-randomness/programs/use-randomness/src/lib.rs).
+- **Full app examples:** [MagicBlock Engine examples](https://github.com/magicblock-labs/magicblock-engine-examples), especially the [roll-dice example](https://github.com/magicblock-labs/magicblock-engine-examples/tree/main/roll-dice) for a complete VRF request-and-callback integration.
+
 ## Quick integration flow
 
 The [MagicBlock VRF quickstart](https://docs.magicblock.gg/pages/verifiable-randomness-functions-vrfs/how-to-guide/quickstart#2-request-%26-consume-randomness) uses a simple request-and-callback pattern: your program requests randomness, names the callback instruction, and then consumes verified randomness in that callback.
@@ -86,7 +91,7 @@ The [MagicBlock VRF quickstart](https://docs.magicblock.gg/pages/verifiable-rand
    }
    ```
 
-Use `DEFAULT_EPHEMERAL_QUEUE` for delegated Ephemeral Rollup programs, or `DEFAULT_QUEUE` for regular base-layer requests. See the [integration test program](program/tests/integration/use-randomness/programs/use-randomness/src/lib.rs) for a minimal working example, or the MagicBlock Engine [roll-dice example](https://github.com/magicblock-labs/magicblock-engine-examples/tree/main/roll-dice) for a full app integration.
+Use `DEFAULT_EPHEMERAL_QUEUE` for delegated Ephemeral Rollup programs, or `DEFAULT_QUEUE` for regular base-layer requests.
 
 ## Overview
 
@@ -99,7 +104,7 @@ The implementation follows [RFC 9381](https://datatracker.ietf.org/doc/html/rfc9
 - [`Consts`](api/src/consts.rs) – Program constants.
 - [`Error`](api/src/error.rs) – Custom program errors.
 - [`Instruction`](api/src/instruction.rs) – Declared instructions.
-- [`SDK`](api/src/sdk.rs) – Custom program events.
+- [`SDK`](api/src/sdk.rs) – Program instruction builders.
 - [`State`](api/src/state) – Program state definitions.
 - [`DelegateOracleQueue`](program/src/delegate_oracle_queue.rs) – Delegate an Oracle queue to the delegation program.
 
@@ -113,9 +118,13 @@ The implementation follows [RFC 9381](https://datatracker.ietf.org/doc/html/rfc9
 
 ## Errors
 
+Common errors include:
+
 - Unauthorized – The authority is not authorized to perform the operation.
 - RandomnessRequestNotFound – The requested randomness was not found.
 - InvalidProof – The provided VRF proof is invalid.
+
+See [`EphemeralVrfError`](api/src/error.rs) for the full error list.
 
 ## State
 
@@ -131,7 +140,7 @@ A Verifiable Random Function (VRF) is a cryptographic primitive that maps inputs
 2. Verifiability: Anyone with the public key can verify that an output was correctly computed from the input without learning the private key.
 3. Pseudorandomness: The output appears random to anyone who doesn't know the private key.
 
-4. In EphemeralVrf, oracles use VRFs to generate random values that can be verified on-chain, ensuring that the randomness is both unpredictable and tamper-resistant.
+In EphemeralVrf, oracles use VRFs to generate random values that can be verified on-chain, ensuring that the randomness is both unpredictable and tamper-resistant.
 
 ## VRF Implementation
 
@@ -213,6 +222,6 @@ CLI for managing oracles. See all available commands with:
 cargo run --bin vrf-cli -- --help
 ```
 
-## Example Usage
+## Example usage
 
-See the [integration tests](program/tests/integration/use-randomness/programs/use-randomness/src/lib.rs) for example usage of the program.
+See the [integration test program](program/tests/integration/use-randomness/programs/use-randomness/src/lib.rs) for a minimal program-level example, or the [MagicBlock Engine examples repository](https://github.com/magicblock-labs/magicblock-engine-examples) for full app integrations.
