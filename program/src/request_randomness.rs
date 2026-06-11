@@ -38,8 +38,18 @@ pub fn process_request_randomness(
     accounts: &[AccountInfo<'_>],
     data: &[u8],
     high_priority: bool,
+    scoped: bool,
 ) -> ProgramResult {
     let args = RequestRandomness::try_from_bytes(data)?;
+
+    // For scoped requests, precompute the scoped identity bump once here so that
+    // `provide_randomness` can use the cheap `create_program_address` instead of
+    // `find_program_address` on the (oracle-paid) fulfillment path.
+    let identity_bump = if scoped {
+        scoped_identity_pda(&args.callback_program_id).1
+    } else {
+        0
+    };
 
     // Load accounts
     let [signer_info, program_identity_info, oracle_queue_info, system_program_info, slothashes_account_info] =
@@ -56,6 +66,10 @@ pub fn process_request_randomness(
         .has_seeds(&[IDENTITY], &args.callback_program_id)?
         .is_signer()?;
 
+    oracle_queue_info
+        .is_writable()?
+        .has_owner(&ephemeral_vrf_api::ID)?;
+
     // Load slot and slothash
     slothashes_account_info.is_sysvar(&slot_hashes::id())?;
     let slothash: [u8; 32] = slothashes_account_info.try_borrow_data()?[16..48]
@@ -67,15 +81,13 @@ pub fn process_request_randomness(
     {
         // Borrow queue account data and load QueueAccount view
         let mut data = oracle_queue_info.try_borrow_mut_data()?;
-        if data.len() < 8 {
-            return Err(ProgramError::InvalidAccountData);
-        }
+        Queue::try_from_bytes(&data)?;
         // Skip 8-byte discriminator
         let queue_data = &mut data[8..];
         let mut queue_acc = QueueAccount::load(queue_data)?;
 
-        // Compute a combined hash that includes a logical insertion index hint
-        let idx = queue_acc.len() as u32;
+        // Compute a combined hash that includes the queue cursor as an insertion hint
+        let idx = queue_acc.header.cursor;
         let combined_hash = hashv(&[
             &args.caller_seed,
             &slot.to_le_bytes(),
@@ -107,7 +119,9 @@ pub fn process_request_randomness(
             args_len: 0,
             priority_request: high_priority as u8,
             used: 0,
-            _padding: [0u8; 4],
+            identity_mode: scoped as u8,
+            identity_bump,
+            _padding: [0u8; 2],
         };
 
         // Append the item to the queue (writes discriminator, metas, args into the variable region)

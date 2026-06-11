@@ -48,7 +48,9 @@ pub fn process_delegate_oracle_queue(accounts: &[AccountInfo<'_>], data: &[u8]) 
     let pda_seeds: &[&[u8]] = &[QUEUE, &authority_info.key.to_bytes(), &[args.index]];
     oracle_queue_info
         .is_writable()?
+        .has_owner(&ephemeral_vrf_api::ID)?
         .has_seeds(pda_seeds, &ephemeral_vrf_api::ID)?;
+    Queue::try_from_bytes(&oracle_queue_info.try_borrow_data()?)?;
 
     // Delegate
     let delegate_accounts = DelegateAccounts {

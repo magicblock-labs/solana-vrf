@@ -18,6 +18,8 @@ pub enum EphemeralVrfInstruction {
     CloseOracleQueue = 7,
     RequestRandomness = 8,
     PurgeExpiredRequests = 9,
+    RequestRandomnessScoped = 10,
+    RequestHighPriorityRandomnessScoped = 11,
 }
 
 #[repr(C)]

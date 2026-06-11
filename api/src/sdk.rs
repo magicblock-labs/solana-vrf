@@ -108,11 +108,66 @@ pub fn provide_randomness(
     commitment_hash_compressed: PodRistrettoPoint,
     s: PodScalar,
 ) -> Instruction {
+    provide_randomness_with_identity_mode(
+        oracle_identity,
+        oracle_queue,
+        callback_program_id,
+        1,
+        rnd_seed,
+        output,
+        commitment_base_compressed,
+        commitment_hash_compressed,
+        s,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn provide_randomness_legacy(
+    oracle_identity: Pubkey,
+    oracle_queue: Pubkey,
+    callback_program_id: Pubkey,
+    rnd_seed: [u8; 32],
+    output: PodRistrettoPoint,
+    commitment_base_compressed: PodRistrettoPoint,
+    commitment_hash_compressed: PodRistrettoPoint,
+    s: PodScalar,
+) -> Instruction {
+    provide_randomness_with_identity_mode(
+        oracle_identity,
+        oracle_queue,
+        callback_program_id,
+        0,
+        rnd_seed,
+        output,
+        commitment_base_compressed,
+        commitment_hash_compressed,
+        s,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn provide_randomness_with_identity_mode(
+    oracle_identity: Pubkey,
+    oracle_queue: Pubkey,
+    callback_program_id: Pubkey,
+    identity_mode: u8,
+    rnd_seed: [u8; 32],
+    output: PodRistrettoPoint,
+    commitment_base_compressed: PodRistrettoPoint,
+    commitment_hash_compressed: PodRistrettoPoint,
+    s: PodScalar,
+) -> Instruction {
+    let program_identity = if identity_mode == 1 {
+        scoped_identity_pda(&callback_program_id).0
+    } else {
+        program_identity_pda().0
+    };
+
     Instruction {
         program_id: crate::ID,
         accounts: vec![
             AccountMeta::new(oracle_identity, true),
-            AccountMeta::new_readonly(program_identity_pda().0, false),
+            AccountMeta::new_readonly(program_identity, false),
             AccountMeta::new_readonly(oracle_data_pda(&oracle_identity).0, false),
             AccountMeta::new(oracle_queue, false),
             AccountMeta::new_readonly(callback_program_id, false),
@@ -181,5 +236,60 @@ pub fn close_oracle_queue(identity: Pubkey, index: u8) -> Instruction {
             AccountMeta::new(oracle_queue_pda(&identity, index).0, false),
         ],
         data: CloseOracleQueue { index }.to_bytes(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn provide_randomness_test_ix(identity_mode: u8) -> Instruction {
+        provide_randomness_with_identity_mode(
+            Pubkey::new_from_array([1; 32]),
+            Pubkey::new_from_array([2; 32]),
+            Pubkey::new_from_array([3; 32]),
+            identity_mode,
+            [4; 32],
+            PodRistrettoPoint([5; 32]),
+            PodRistrettoPoint([6; 32]),
+            PodRistrettoPoint([7; 32]),
+            PodScalar([8; 32]),
+        )
+    }
+
+    #[test]
+    fn provide_randomness_uses_scoped_identity_by_default() {
+        let callback_program_id = Pubkey::new_from_array([3; 32]);
+        let ix = provide_randomness(
+            Pubkey::new_from_array([1; 32]),
+            Pubkey::new_from_array([2; 32]),
+            callback_program_id,
+            [4; 32],
+            PodRistrettoPoint([5; 32]),
+            PodRistrettoPoint([6; 32]),
+            PodRistrettoPoint([7; 32]),
+            PodScalar([8; 32]),
+        );
+
+        assert_eq!(
+            ix.accounts[1].pubkey,
+            scoped_identity_pda(&callback_program_id).0
+        );
+    }
+
+    #[test]
+    fn provide_randomness_identity_mode_selects_legacy_identity() {
+        let ix = provide_randomness_test_ix(0);
+        assert_eq!(ix.accounts[1].pubkey, program_identity_pda().0);
+    }
+
+    #[test]
+    fn provide_randomness_identity_mode_selects_scoped_identity() {
+        let callback_program_id = Pubkey::new_from_array([3; 32]);
+        let ix = provide_randomness_test_ix(1);
+        assert_eq!(
+            ix.accounts[1].pubkey,
+            scoped_identity_pda(&callback_program_id).0
+        );
     }
 }

@@ -1,6 +1,23 @@
 use ephemeral_vrf_api::prelude::*;
 use ephemeral_vrf_api::verify::verify_vrf;
-use solana_program::hash::hash;
+use solana_program::{hash::hash, pubkey};
+
+const ALLOWED_EXECUTABLE_CALLBACK_ACCOUNTS: [Pubkey; 8] = [
+    pubkey!("11111111111111111111111111111111"),
+    pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
+    pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"),
+    pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"),
+    pubkey!("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"),
+    pubkey!("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d"),
+    pubkey!("DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh"),
+    pubkey!("Magic11111111111111111111111111111111111111"),
+];
+
+fn has_disallowed_executable_callback_account(accounts: &[AccountInfo<'_>]) -> bool {
+    accounts.iter().any(|account| {
+        account.executable && !ALLOWED_EXECUTABLE_CALLBACK_ACCOUNTS.contains(account.key)
+    })
+}
 
 /// Process the provide randomness instruction which verifies VRF proof and executes vrf-macro
 ///
@@ -19,6 +36,7 @@ use solana_program::hash::hash;
 /// - VRF proof must be valid for the given input and output
 /// - Request must exist in the oracle queue
 /// - Oracle signer must not be included in vrf-macro accounts
+/// - Callback remaining accounts must not include disallowed executable program accounts
 ///
 /// 1. Verify the oracle signer and load oracle data
 /// 2. Verify the VRF proof
@@ -149,11 +167,34 @@ pub fn process_provide_randomness(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
     all_accounts.extend(vec![program_identity_info.clone()]);
     all_accounts.extend_from_slice(remaining_accounts);
 
-    // Invoke the vrf-macro with randomness and signed identity
-    let id = program_identity_pda();
-    program_identity_info.has_address(&id.0)?;
-    let pda_signer_seeds: &[&[&[u8]]] = &[&[IDENTITY, &[id.1]]];
-    solana_program::program::invoke_signed(&ix, &all_accounts, pda_signer_seeds)?;
+    // Invoke the vrf-macro with randomness, signing with the appropriate identity.
+    let callback_id = Pubkey::new_from_array(removed_item.callback_program_id);
+    match removed_item.identity_mode {
+        1 => {
+            // Scoped identity (default): PDA([IDENTITY, callback_program_id]), bound to this
+            // callback program. The stored bump avoids `find_program_address` here.
+            let bump = removed_item.identity_bump;
+            let scoped = Pubkey::create_program_address(
+                &[IDENTITY, callback_id.as_ref(), &[bump]],
+                &ephemeral_vrf_api::ID,
+            )
+            .map_err(|_| ProgramError::InvalidSeeds)?;
+            // Require the scoped identity for a scoped request (no fallback to the global one).
+            program_identity_info.has_address(&scoped)?;
+            let pda_signer_seeds: &[&[&[u8]]] = &[&[IDENTITY, callback_id.as_ref(), &[bump]]];
+            solana_program::program::invoke_signed(&ix, &all_accounts, pda_signer_seeds)?;
+        }
+        _ => {
+            // Legacy global identity (deprecated): keep the executable allow-list check.
+            if has_disallowed_executable_callback_account(remaining_accounts) {
+                return Err(EphemeralVrfError::InvalidCallbackAccounts.into());
+            }
+            let id = program_identity_pda();
+            program_identity_info.has_address(&id.0)?;
+            let pda_signer_seeds: &[&[&[u8]]] = &[&[IDENTITY, &[id.1]]];
+            solana_program::program::invoke_signed(&ix, &all_accounts, pda_signer_seeds)?;
+        }
+    }
 
     // Collect the fees (unless this is a fee-exempt ephemeral queue)
     if !crate::fees::is_fee_exempt_ephemeral_queue(oracle_queue_info.key) {

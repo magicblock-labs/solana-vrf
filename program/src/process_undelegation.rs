@@ -31,6 +31,19 @@ pub fn process_undelegation(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
+    if pda_seeds.len() != 3
+        || pda_seeds[0].as_slice() != QUEUE
+        || pda_seeds[1].len() != 32
+        || pda_seeds[2].len() != 1
+    {
+        return Err(ProgramError::InvalidSeeds);
+    }
+    let authority = pda_seeds[1].as_slice();
+    let index = [pda_seeds[2][0]];
+    oracle_queue_info
+        .is_writable()?
+        .has_seeds(&[QUEUE, authority, &index], &ephemeral_vrf_api::ID)?;
+
     // Undelegate
     undelegate_account(
         oracle_queue_info,
@@ -40,6 +53,9 @@ pub fn process_undelegation(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         system_program,
         pda_seeds,
     )?;
+
+    let queue_data = oracle_queue_info.try_borrow_data()?;
+    Queue::try_from_bytes(&queue_data)?;
 
     Ok(())
 }

@@ -2349,7 +2349,7 @@ dependencies = [
 
 [[package]]
 name = "ephemeral-vrf"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "curve25519-dalek 4.1.3",
  "hkdf",
@@ -2359,7 +2359,7 @@ dependencies = [
 
 [[package]]
 name = "ephemeral-vrf-api"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "bincode",
  "borsh 1.5.7",
@@ -2377,7 +2377,7 @@ dependencies = [
 
 [[package]]
 name = "ephemeral-vrf-oracle"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "ephemeral-vrf",
  "solana-sdk",
@@ -2385,7 +2385,7 @@ dependencies = [
 
 [[package]]
 name = "ephemeral-vrf-program"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "curve25519-dalek 4.1.3",
@@ -2404,7 +2404,7 @@ dependencies = [
 
 [[package]]
 name = "ephemeral-vrf-sdk"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anchor-lang 0.31.1",
  "anchor-lang 1.0.2",
@@ -2419,7 +2419,7 @@ dependencies = [
 
 [[package]]
 name = "ephemeral-vrf-sdk-vrf-macro"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -10815,7 +10815,7 @@ checksum = "6a02e4885ed3bc0f2de90ea6dd45ebcbb66dacffe03547fadbb0eeae2770887d"
 
 [[package]]
 name = "vrf-cli"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -10830,7 +10830,7 @@ dependencies = [
 
 [[package]]
 name = "vrf-oracle"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",

@@ -34,8 +34,10 @@ pub struct QueueItem {
     pub metas_len: u16, // number of SerializableAccountMeta
     pub args_len: u16,  // number of bytes
     pub priority_request: u8,
-    pub used: u8, // Flag: 1 = used, 0 = free (logically removed)
-    pub _padding: [u8; 4],
+    pub used: u8,          // Flag: 1 = used, 0 = free (logically removed)
+    pub identity_mode: u8, // 0 = legacy global identity, 1 = scoped per-callback identity
+    pub identity_bump: u8, // bump for the scoped identity PDA (valid when identity_mode == 1)
+    pub _padding: [u8; 2],
 }
 
 impl QueueItem {
@@ -393,26 +395,13 @@ impl<'a> QueueAccount<'a> {
 
             if item.used == 1 {
                 if current == index {
-                    // Compute if this item was at the physical tail
-                    let metas_bytes = (item.metas_len as usize) * size_of::<CompactAccountMeta>();
-                    let item_end = cursor
-                        + size_of::<QueueItem>()
-                        + (item.callback_discriminator_len as usize)
-                        + metas_bytes
-                        + (item.args_len as usize);
-                    let next = Self::align_up(item_end, align);
-                    let was_tail = next == self.header.cursor as usize;
-
                     // Logically remove
                     item.used = 0;
                     self.header.item_count = self.header.item_count.saturating_sub(1);
                     // Write back modified item using unaligned write
                     Self::write_item_unaligned(bytes, &item);
 
-                    // If we removed the tail, shrink cursor to eliminate trailing holes
-                    if was_tail {
-                        self.trim_trailing_holes();
-                    }
+                    self.trim_trailing_holes();
 
                     return Ok(item);
                 }

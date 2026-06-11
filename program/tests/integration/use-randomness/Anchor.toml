@@ -7,11 +7,10 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-use_randomness = "CDiutifqugEkabdqwc5TK3FmSAgFpkP3RPE1642BCEhi"
+use_randomness = "Cz9eXYRuhR7fxmhEvYRY5X19qhybJ29wpaervEHHz32s"
 
 [registry]
 url = "https://api.apr.dev"
-
 
 [provider]
 cluster = "localnet"
@@ -22,9 +21,8 @@ test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
 
 [test]
 startup_wait = 20000
-
-[test.validator]
-bind_address = "127.0.0.1"
+shutdown_wait = 2000
+upgradeable = false
 
 [[test.genesis]]
 address = "DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh"
@@ -35,6 +33,11 @@ upgradeable = false
 address = "Vrf1RNUjXmQGjmQrQLvJHs9SNkvDJEsRVFPkfSQUwGz"
 program = "../../../../target/deploy/ephemeral_vrf_program.so"
 upgradeable = false
+
+[test.validator]
+bind_address = "127.0.0.1"
+ledger = ".anchor/test-ledger"
+rpc_port = 8899
 
 [[test.validator.account]]
 address = "3ctxDejjAY6YGt7rNUUGaKTwvaTaRvwSwRo2fJQqcqWA"
@@ -48,7 +51,6 @@ filename = "tests/fixtures/oracle_data.json"
 address = "GKE6d7iv8kCBrsxr78W3xVdjGLLLJnxsGiuzrsZCGEvb"
 filename = "tests/fixtures/oracle_queue.json"
 
-# Delegated (ephemeral) index-1 queue + its delegation record/metadata accounts.
 [[test.validator.account]]
 address = "Sc9MJUngNbQXSXGP3F67KvKwVnhaYn6kcioxXNVowYT"
 filename = "tests/fixtures/oracle_ephemeral_queue.json"

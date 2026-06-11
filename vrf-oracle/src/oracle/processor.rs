@@ -4,7 +4,8 @@ use anyhow::Result;
 use ephemeral_vrf::vrf::{compute_vrf, verify_vrf};
 use ephemeral_vrf_api::{
     prelude::{
-        provide_randomness, purge_expired_requests, Queue, QueueAccount, QueueItem, QUEUE_TTL_SLOTS,
+        provide_randomness_with_identity_mode, purge_expired_requests, Queue, QueueAccount,
+        QueueItem, QUEUE_TTL_SLOTS,
     },
     state::oracle_queue_pda,
     ID as PROGRAM_ID,
@@ -344,10 +345,11 @@ impl ProcessableItem {
             purge_expired_requests(oracle_client.keypair.pubkey(), queue_meta.index)
         } else {
             // Build provide_randomness instruction
-            let mut ix = provide_randomness(
+            let mut ix = provide_randomness_with_identity_mode(
                 oracle_client.keypair.pubkey(),
                 *queue_pubkey,
                 Pubkey::new_from_array(self.0.callback_program_id),
+                self.0.identity_mode,
                 *vrf_input,
                 PodRistrettoPoint(output.to_bytes()),
                 PodRistrettoPoint(commitment_base.to_bytes()),
