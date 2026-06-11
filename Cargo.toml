@@ -3,7 +3,7 @@ resolver = "2"
 members = ["api", "program", "sdk", "src", "vrf", "vrf-cli", "vrf-oracle"]
 
 [workspace.package]
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 license = "Business Source License 1.1"
 authors = ["MagicBlock Labs <dev@magicblock.xyz>"]
@@ -32,7 +32,7 @@ env_logger = "0.11.7"
 ephemeral-rollups-sdk = "0.15.1"
 ephemeral-vrf = { path = "./vrf" }
 ephemeral-vrf-api = { path = "./api" }
-ephemeral-vrf-sdk-vrf-macro = { path = "sdk/vrf-macro", version = "0.3.0" }
+ephemeral-vrf-sdk-vrf-macro = { path = "sdk/vrf-macro", version = "0.4.0" }
 futures = "0.3.31"
 futures-core = "0.3.31"
 futures-util = "0.3.31"

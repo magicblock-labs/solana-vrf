@@ -47,7 +47,7 @@ async fn setup() -> ProgramTestContext {
     // Setup program to test vrf-macro
     let data = read_file("tests/integration/use-randomness/target/deploy/use_randomness.so");
     program_test.add_account(
-        pubkey!("CDiutifqugEkabdqwc5TK3FmSAgFpkP3RPE1642BCEhi"),
+        TEST_CALLBACK_PROGRAM,
         Account {
             lamports: Rent::default().minimum_balance(data.len()).max(1),
             data,
@@ -209,7 +209,7 @@ async fn run_test() {
             .await
             .unwrap()
             .minimum_balance(oracle_queue_account.data.len())
-            + VRF_HIGH_PRIORITY_LAMPORTS_COST
+            + VRF_LAMPORTS_COST
     );
 
     // Advance to a later slot

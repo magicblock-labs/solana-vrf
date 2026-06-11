@@ -44,6 +44,13 @@ pub fn program_identity_pda() -> (Pubkey, u8) {
     (pubkey!("9irBy75QS2BN81FUgXuHcjqceJJRuc9oDkAe8TKVvvAw"), 254)
 }
 
+/// Scoped, per-callback-program identity PDA: `PDA([IDENTITY, callback_program_id], vrf)`.
+/// Bound to a specific callback program; this is the default identity used to sign callbacks.
+/// The global [`program_identity_pda`] is deprecated.
+pub fn scoped_identity_pda(callback_program_id: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[IDENTITY, callback_program_id.as_ref()], &crate::id())
+}
+
 /// Fetch PDA of the queue account.
 pub fn oracle_queue_pda(identity: &Pubkey, index: u8) -> (Pubkey, u8) {
     Pubkey::find_program_address(

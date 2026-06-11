@@ -4,6 +4,7 @@ use ephemeral_vrf_api::prelude::EphemeralVrfError::{
 };
 use ephemeral_vrf_api::prelude::*;
 use ephemeral_vrf_api::verify::is_on_curve;
+use solana_curve25519::ristretto::validate_ristretto;
 use solana_program::msg;
 
 /// Process the modification of oracles (add or remove)
@@ -39,6 +40,11 @@ pub fn process_modify_oracles(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     if args.identity == Pubkey::default()
         || args.identity == system_program::ID
         || !is_on_curve(&args.identity)
+    {
+        return Err(InvalidOracleIdentity.into());
+    }
+    if args.operation == 0
+        && (args.oracle_pubkey.0 == [0u8; 32] || !validate_ristretto(&args.oracle_pubkey))
     {
         return Err(InvalidOracleIdentity.into());
     }
