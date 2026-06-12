@@ -29,17 +29,17 @@ pub fn random_u8(bytes: &[u8; 32]) -> u8 {
 /// a value that falls within an evenly divisible range. If no such value is found,
 /// it falls back to a slightly biased approach using the last byte.
 pub fn random_u8_with_range(bytes: &[u8; 32], min_value: u8, max_value: u8) -> u8 {
-    let range = (max_value - min_value + 1) as u16;
-    let threshold = (256 / range * range) as u8;
+    let range = max_value as u16 - min_value as u16 + 1;
+    let threshold = 256 / range * range;
 
     // Try to find a byte that, when mapped, gives an unbiased result
     for &b in bytes.iter().rev() {
-        if b < threshold {
-            return min_value + (b % range as u8);
+        if (b as u16) < threshold {
+            return (min_value as u16 + (b as u16 % range)) as u8;
         }
     }
     // Fallback (slight bias, but rare fallback case)
-    min_value + (bytes[31] % range as u8)
+    (min_value as u16 + (bytes[31] as u16 % range)) as u8
 }
 
 /// Generates a random u32 value from a 32-byte random seed
@@ -108,4 +108,32 @@ pub fn random_i64(bytes: &[u8; 32]) -> i64 {
 #[allow(clippy::manual_is_multiple_of)]
 pub fn random_bool(bytes: &[u8; 32]) -> bool {
     (bytes[31] % 2) == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::random_u8_with_range;
+
+    #[test]
+    fn random_u8_with_range_allows_equal_bounds() {
+        let bytes = [42; 32];
+
+        assert_eq!(random_u8_with_range(&bytes, 7, 7), 7);
+    }
+
+    #[test]
+    fn random_u8_with_range_allows_full_u8_range() {
+        let bytes = [255; 32];
+
+        assert_eq!(random_u8_with_range(&bytes, 0, 255), 255);
+    }
+
+    #[test]
+    fn random_u8_with_range_stays_within_requested_bounds() {
+        let bytes = [0; 32];
+
+        let value = random_u8_with_range(&bytes, 1, 6);
+
+        assert!((1..=6).contains(&value));
+    }
 }
