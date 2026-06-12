@@ -1,11 +1,31 @@
 use proc_macro::TokenStream;
+use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{parse_macro_input, ItemStruct};
+
+/// Resolve the base path to the VRF SDK that generated code references.
+///
+/// The generated code needs an absolute path to the VRF SDK. Users may depend on it in two ways:
+/// - directly, as `ephemeral-vrf-sdk` (the macro emits `::ephemeral_vrf_sdk`), or
+/// - via `ephemeral-rollups-sdk`, which re-exports it under `::ephemeral_rollups_sdk::vrf`.
+///
+/// The `rollups` feature selects between the two. `ephemeral-rollups-sdk` enables it (see its
+/// `anchor-support` feature) so users depending only on the rollups SDK build without a direct
+/// `ephemeral-vrf-sdk` dependency. With the feature off (direct VRF SDK users), the historical
+/// `::ephemeral_vrf_sdk` path is emitted unchanged.
+fn vrf_sdk_path() -> TokenStream2 {
+    if cfg!(feature = "rollups") {
+        quote!(::ephemeral_rollups_sdk::vrf)
+    } else {
+        quote!(::ephemeral_vrf_sdk)
+    }
+}
 
 #[proc_macro_attribute]
 pub fn vrf(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemStruct);
 
+    let vrf = vrf_sdk_path();
     let unchecked_account = generated_unchecked_account_type();
     let struct_name = &input.ident;
     let fields = &input.fields;
@@ -62,13 +82,13 @@ pub fn vrf(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
     if !has_vrf_program {
         new_fields.push(quote! {
-            pub vrf_program: Program<'info, ::ephemeral_vrf_sdk::anchor::VrfProgram>,
+            pub vrf_program: Program<'info, #vrf::anchor::VrfProgram>,
         });
     }
     if !has_slot_hashes {
         new_fields.push(quote! {
             /// CHECK: Slot hashes sysvar
-            #[account(address = ::ephemeral_vrf_sdk::compat::slot_hashes::ID)]
+            #[account(address = #vrf::compat::slot_hashes::ID)]
             pub slot_hashes: #unchecked_account,
         });
     }
@@ -86,8 +106,8 @@ pub fn vrf(_attr: TokenStream, item: TokenStream) -> TokenStream {
         }
 
         impl<'info> #struct_name<'info> {
-            fn invoke_signed_vrf<'a>(&self, payer: &'a AccountInfo<'info>, ix: &::ephemeral_vrf_sdk::compat::Instruction) -> ::ephemeral_vrf_sdk::compat::anchor_lang::solana_program::entrypoint::ProgramResult {
-                let bump = Pubkey::try_find_program_address(&[ephemeral_vrf_sdk::consts::IDENTITY], &crate::ID).ok_or(::ephemeral_vrf_sdk::compat::anchor_lang::prelude::ProgramError::InvalidSeeds)?;
+            fn invoke_signed_vrf<'a>(&self, payer: &'a AccountInfo<'info>, ix: &#vrf::compat::Instruction) -> #vrf::compat::anchor_lang::solana_program::entrypoint::ProgramResult {
+                let bump = Pubkey::try_find_program_address(&[#vrf::consts::IDENTITY], &crate::ID).ok_or(#vrf::compat::anchor_lang::prelude::ProgramError::InvalidSeeds)?;
                 // `#[vrf]` issues scoped randomness requests by default: the fulfillment signs
                 // the callback with the per-program scoped identity PDA, which the callback
                 // validates (see `#[vrf_callback]`). Map any legacy request discriminator to its
@@ -96,7 +116,7 @@ pub fn vrf(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 if let Some(disc) = ix.data.first_mut() {
                     *disc = if *disc == 3 || *disc == 11 { 11 } else { 10 };
                 }
-                ::ephemeral_vrf_sdk::compat::anchor_lang::solana_program::program::invoke_signed(
+                #vrf::compat::anchor_lang::solana_program::program::invoke_signed(
                     &ix,
                     &[
                         payer.clone(),
@@ -104,7 +124,7 @@ pub fn vrf(_attr: TokenStream, item: TokenStream) -> TokenStream {
                         self.oracle_queue.to_account_info(),
                         self.slot_hashes.to_account_info(),
                     ],
-                    &[&[ephemeral_vrf_sdk::consts::IDENTITY, &[bump.1]]],
+                    &[&[#vrf::consts::IDENTITY, &[bump.1]]],
                 )
             }
         }
@@ -124,6 +144,7 @@ pub fn vrf(_attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn vrf_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemStruct);
+    let vrf = vrf_sdk_path();
     let struct_name = &input.ident;
     let original_attrs = &input.attrs;
 
@@ -155,7 +176,7 @@ pub fn vrf_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
             quote! {
                 /// Scoped VRF identity PDA, bound to this program. Its presence as a signer proves
                 /// the callback was issued by the VRF program for this program.
-                #[account(address = ::ephemeral_vrf_sdk::consts::scoped_vrf_identity(&crate::ID))]
+                #[account(address = #vrf::consts::scoped_vrf_identity(&crate::ID))]
                 pub vrf_program_identity: Signer<'info>,
             },
         );
