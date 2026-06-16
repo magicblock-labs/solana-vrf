@@ -96,15 +96,6 @@ jobs:
           solana --version
           solana-keygen new --silent --no-bip39-passphrase
 
-      - name: run build (all test-combinations)
-        run: |
-          export PATH="${{ needs.setup.outputs.solana_path }}:$PATH"
-          cargo --version
-          cargo build-sbf --version
-          bash sdk/scripts/test-combinations.sh --no-color
-          cargo build
-          cd program && cargo build-sbf --features test-sbf
-
       - name: run integration tests
         working-directory: program/tests/integration/use-randomness
         run: |
