@@ -86,8 +86,23 @@ pub fn process_request_randomness(
         let queue_data = &mut data[8..];
         let mut queue_acc = QueueAccount::load(queue_data)?;
 
-        // Compute a combined hash that includes the queue cursor as an insertion hint
-        let idx = queue_acc.header.cursor;
+        // Optionally validate discriminator length to 8 bytes max (borsh Vec allows larger, but callbacks typically use 8)
+        if args.callback_discriminator.len() > 8 {
+            return Err(ProgramError::from(EphemeralVrfError::ArgumentSizeTooLarge));
+        }
+
+        let metas = args
+            .callback_accounts_metas
+            .iter()
+            .map(|ca| (*ca).into())
+            .collect::<Vec<CompactAccountMeta>>();
+
+        // Compute a combined hash that includes the actual queue insertion position.
+        let idx = queue_acc.insertion_position(
+            &args.callback_discriminator,
+            &metas,
+            &args.callback_args,
+        )?;
         let combined_hash = hashv(&[
             &args.caller_seed,
             &slot.to_le_bytes(),
@@ -100,11 +115,6 @@ pub fn process_request_randomness(
 
         // Log to simplify gathering all the information needed to recreate the combined_hash.
         msg!("Idx: {}", idx);
-
-        // Optionally validate discriminator length to 8 bytes max (borsh Vec allows larger, but callbacks typically use 8)
-        if args.callback_discriminator.len() > 8 {
-            return Err(ProgramError::from(EphemeralVrfError::ArgumentSizeTooLarge));
-        }
 
         // Build the base item; variable-length parts are appended by add_item()
         let base_item = QueueItem {
@@ -125,11 +135,6 @@ pub fn process_request_randomness(
         };
 
         // Append the item to the queue (writes discriminator, metas, args into the variable region)
-        let metas = args
-            .callback_accounts_metas
-            .iter()
-            .map(|ca| (*ca).into())
-            .collect::<Vec<CompactAccountMeta>>();
         let _logical_index = queue_acc.add_item(
             &base_item,
             &args.callback_discriminator,

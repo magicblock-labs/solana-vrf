@@ -4,6 +4,8 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use core::mem::{size_of, size_of_val};
 use core::ptr;
 
+const MAX_CALLBACK_ACCOUNTS: usize = 25;
+
 /// Header of the queue account (fixed size, lives at the start of the account
 /// after the 8-byte discriminator).
 #[repr(C)]
@@ -131,6 +133,12 @@ struct ReusableSpan {
 struct QueueScan {
     last_used_end_aligned: usize,
     reusable_span: Option<ReusableSpan>,
+}
+
+#[derive(Clone, Copy)]
+struct QueueItemLayout {
+    total_needed: usize,
+    required_span: usize,
 }
 
 impl<'a> QueueAccount<'a> {
@@ -273,6 +281,26 @@ impl<'a> QueueAccount<'a> {
         Ok(args_end)
     }
 
+    fn item_layout(
+        discriminator: &[u8],
+        metas: &[CompactAccountMeta],
+        args: &[u8],
+    ) -> Result<QueueItemLayout, ProgramError> {
+        if metas.len() > MAX_CALLBACK_ACCOUNTS || args.len() > 512 {
+            return Err(ProgramError::from(EphemeralVrfError::ArgumentSizeTooLarge));
+        }
+
+        let total_needed = size_of::<QueueItem>()
+            .saturating_add(discriminator.len())
+            .saturating_add(size_of_val(metas))
+            .saturating_add(args.len());
+
+        Ok(QueueItemLayout {
+            total_needed,
+            required_span: Self::align_up(total_needed, core::mem::align_of::<QueueItem>()),
+        })
+    }
+
     /// Recompute the end of the last used item and shrink the cursor to it,
     /// effectively removing all trailing holes. If no items are used, reset to items_start().
     fn trim_trailing_holes(&mut self) {
@@ -307,6 +335,25 @@ impl<'a> QueueAccount<'a> {
         }
     }
 
+    pub fn insertion_position(
+        &self,
+        discriminator: &[u8],
+        metas: &[CompactAccountMeta],
+        args: &[u8],
+    ) -> Result<u32, ProgramError> {
+        let layout = Self::item_layout(discriminator, metas, args)?;
+        let scan = self.scan_for_reusable_span(layout.required_span);
+        let cursor = core::cmp::min(self.header.cursor as usize, scan.last_used_end_aligned);
+
+        if let Some(span) = scan.reusable_span {
+            if span.item_pos < cursor {
+                return Ok(span.item_pos as u32);
+            }
+        }
+
+        Ok(Self::align_up(cursor, core::mem::align_of::<QueueItem>()) as u32)
+    }
+
     /// Append a new item to the queue.
     pub fn add_item(
         &mut self,
@@ -315,26 +362,9 @@ impl<'a> QueueAccount<'a> {
         metas: &[CompactAccountMeta],
         args: &[u8],
     ) -> Result<usize, ProgramError> {
-        // Enforce upper bounds on metas and args lengths to prevent oversized QueueItems
-        if metas.len() > 20 || args.len() > 512 {
-            return Err(ProgramError::from(EphemeralVrfError::ArgumentSizeTooLarge));
-        }
-
-        // Pre-compute sizes for a transactional capacity check to avoid partial writes
+        let layout = Self::item_layout(discriminator, metas, args)?;
         let items_align = core::mem::align_of::<QueueItem>();
-        let item_size = size_of::<QueueItem>();
-        let disc_len_usize = discriminator.len();
-        let metas_bytes_len = size_of_val(metas);
-        let args_len_usize = args.len();
-
-        // Total bytes needed for this append (no trailing alignment; we align at the start)
-        let total_needed = item_size
-            .saturating_add(disc_len_usize)
-            .saturating_add(metas_bytes_len)
-            .saturating_add(args_len_usize);
-
-        let required_span = Self::align_up(total_needed, items_align);
-        let scan = self.scan_for_reusable_span(required_span);
+        let scan = self.scan_for_reusable_span(layout.required_span);
 
         if (scan.last_used_end_aligned as u32) < self.header.cursor {
             self.header.cursor = scan.last_used_end_aligned as u32;
@@ -350,7 +380,7 @@ impl<'a> QueueAccount<'a> {
 
         // Ensure we have enough room in the account before mutating any state
         let aligned = Self::align_up(self.header.cursor as usize, items_align);
-        if aligned.saturating_add(total_needed) > self.acc.len() {
+        if aligned.saturating_add(layout.total_needed) > self.acc.len() {
             return Err(ProgramError::AccountDataTooSmall);
         }
 
@@ -391,15 +421,7 @@ impl<'a> QueueAccount<'a> {
                 out.push(item);
             }
 
-            let metas_bytes = (item.metas_len as usize) * size_of::<CompactAccountMeta>();
-            let next = Self::align_up(
-                cursor
-                    + size_of::<QueueItem>()
-                    + (item.callback_discriminator_len as usize)
-                    + metas_bytes
-                    + (item.args_len as usize),
-                align,
-            );
+            let next = Self::item_next(cursor, &item, align);
 
             // Prevent infinite loop in case of corrupted lengths
             if next <= cursor {
@@ -430,15 +452,7 @@ impl<'a> QueueAccount<'a> {
                 current += 1;
             }
 
-            let metas_bytes = (item.metas_len as usize) * size_of::<CompactAccountMeta>();
-            let next = Self::align_up(
-                cursor
-                    + size_of::<QueueItem>()
-                    + (item.callback_discriminator_len as usize)
-                    + metas_bytes
-                    + (item.args_len as usize),
-                align,
-            );
+            let next = Self::item_next(cursor, &item, align);
             if next <= cursor {
                 break;
             }
@@ -475,15 +489,7 @@ impl<'a> QueueAccount<'a> {
                 current += 1;
             }
 
-            let metas_bytes = (item.metas_len as usize) * size_of::<CompactAccountMeta>();
-            let next = Self::align_up(
-                cursor
-                    + size_of::<QueueItem>()
-                    + (item.callback_discriminator_len as usize)
-                    + metas_bytes
-                    + (item.args_len as usize),
-                align,
-            );
+            let next = Self::item_next(cursor, &item, align);
             if next <= cursor {
                 break;
             }
@@ -512,15 +518,7 @@ impl<'a> QueueAccount<'a> {
                 current += 1;
             }
 
-            let metas_bytes = (item.metas_len as usize) * size_of::<CompactAccountMeta>();
-            let next = Self::align_up(
-                cursor
-                    + size_of::<QueueItem>()
-                    + (item.callback_discriminator_len as usize)
-                    + metas_bytes
-                    + (item.args_len as usize),
-                align,
-            );
+            let next = Self::item_next(cursor, &item, align);
             if next <= cursor {
                 break;
             }
@@ -613,7 +611,7 @@ mod tests {
             size_of::<QueueItem>() + discriminator.len() + size_of_val(&metas) + args.len(),
             core::mem::align_of::<QueueItem>(),
         );
-        let mut data = vec![0u8; QueueAccount::items_start() + (span * 3)];
+        let mut data = vec![0u8; QueueAccount::items_start() + (span * 4)];
         let mut queue = QueueAccount::load(&mut data).unwrap();
 
         queue
@@ -628,8 +626,15 @@ mod tests {
 
         let cursor_after_fill = queue.header.cursor;
         let removed = queue.remove_item(1).unwrap();
+        let removed_pos = removed.callback_discriminator_offset as usize - size_of::<QueueItem>();
         assert_eq!(removed.id, [1; 32]);
         assert_eq!(queue.header.cursor, cursor_after_fill);
+        assert_eq!(
+            queue
+                .insertion_position(&discriminator, &metas, &args)
+                .unwrap() as usize,
+            removed_pos
+        );
 
         let reused_index = queue
             .add_item(&test_item(9), &discriminator, &metas, &args)
@@ -638,6 +643,15 @@ mod tests {
         assert_eq!(reused_index, 1);
         assert_eq!(queue.header.cursor, cursor_after_fill);
         assert_eq!(queue.len(), 3);
+        assert_eq!(
+            queue
+                .insertion_position(&discriminator, &metas, &args)
+                .unwrap(),
+            QueueAccount::align_up(
+                cursor_after_fill as usize,
+                core::mem::align_of::<QueueItem>()
+            ) as u32
+        );
 
         let reused = queue.get_item_by_index(1).unwrap();
         assert_eq!(reused.id, [9; 32]);
@@ -647,5 +661,30 @@ mod tests {
 
         let tail = queue.get_item_by_index(2).unwrap();
         assert_eq!(tail.id, [2; 32]);
+    }
+
+    #[test]
+    fn add_item_allows_twenty_five_callback_accounts() {
+        let discriminator = [1u8; 8];
+        let args = [3u8; 48];
+        let metas = [CompactAccountMeta {
+            pubkey: [2; 32],
+            is_writable: 1,
+        }; MAX_CALLBACK_ACCOUNTS];
+        let mut data = vec![0u8; 2048];
+        let mut queue = QueueAccount::load(&mut data).unwrap();
+
+        queue
+            .add_item(&test_item(0), &discriminator, &metas, &args)
+            .unwrap();
+
+        let too_many_metas = [CompactAccountMeta {
+            pubkey: [2; 32],
+            is_writable: 1,
+        }; MAX_CALLBACK_ACCOUNTS + 1];
+
+        assert!(queue
+            .add_item(&test_item(1), &discriminator, &too_many_metas, &args)
+            .is_err());
     }
 }
