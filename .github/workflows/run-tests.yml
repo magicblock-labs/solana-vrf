@@ -96,6 +96,13 @@ jobs:
           solana --version
           solana-keygen new --silent --no-bip39-passphrase
 
+      - name: build VRF program
+        run: |
+          export PATH="${{ needs.setup.outputs.solana_path }}:$PATH"
+          cargo --version
+          cargo build-sbf --version
+          cd program && cargo build-sbf --features test-sbf
+
       - name: run integration tests
         working-directory: program/tests/integration/use-randomness
         run: |
