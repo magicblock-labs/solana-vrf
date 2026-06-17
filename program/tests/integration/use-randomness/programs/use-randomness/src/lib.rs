@@ -5,12 +5,12 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::hash::hash;
 use anchor_lang::solana_program::program::invoke_signed;
 use anchor_lang::solana_program::sysvar::slot_hashes;
-use ephemeral_vrf_sdk::anchor::{vrf, vrf_callback, VrfProgram};
-use ephemeral_vrf_sdk::consts::IDENTITY;
-use ephemeral_vrf_sdk::instructions::create_request_scoped_randomness_ix;
-use ephemeral_vrf_sdk::instructions::RequestRandomnessParams;
-use ephemeral_vrf_sdk::rnd::{random_bool, random_u32, random_u8_with_range};
-use ephemeral_vrf_sdk::types::SerializableAccountMeta;
+use ephemeral_rollups_sdk::anchor::{vrf, vrf_callback, VrfProgram};
+use ephemeral_rollups_sdk::vrf::consts::IDENTITY;
+use ephemeral_rollups_sdk::vrf::instructions::create_request_scoped_randomness_ix;
+use ephemeral_rollups_sdk::vrf::instructions::RequestRandomnessParams;
+use ephemeral_rollups_sdk::vrf::rnd::{random_bool, random_u32, random_u8_with_range};
+use ephemeral_rollups_sdk::vrf::types::SerializableAccountMeta;
 
 declare_id!("Cz9eXYRuhR7fxmhEvYRY5X19qhybJ29wpaervEHHz32s");
 
@@ -129,7 +129,7 @@ pub mod use_randomness {
     ) -> Result<()> {
         msg!("Generating a random number (LEGACY global-identity path)");
         #[allow(deprecated)]
-        let ix = ephemeral_vrf_sdk::instructions::create_request_randomness_ix(
+        let ix = ephemeral_rollups_sdk::vrf::instructions::create_request_randomness_ix(
             RequestRandomnessParams {
                 payer: ctx.accounts.payer.key(),
                 oracle_queue: ctx.accounts.oracle_queue.key(),
@@ -203,7 +203,7 @@ pub struct ConsumeRandomnessCtx<'info> {}
 /// backward-compatibility tests.
 #[derive(Accounts)]
 pub struct ConsumeRandomnessLegacyCtx<'info> {
-    #[account(address = ephemeral_vrf_sdk::consts::VRF_PROGRAM_IDENTITY)]
+    #[account(address = ephemeral_rollups_sdk::vrf::consts::VRF_PROGRAM_IDENTITY)]
     pub vrf_program_identity: Signer<'info>,
 }
 

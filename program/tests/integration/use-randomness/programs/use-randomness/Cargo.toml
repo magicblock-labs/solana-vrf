@@ -18,5 +18,7 @@ idl-build = ["anchor-lang/idl-build"]
 
 
 [dependencies]
-anchor-lang = "0.31.1"
-ephemeral-vrf-sdk = { path = "../../../../../../sdk", features = ["anchor-compat"]}
+anchor-lang = "=0.31.1"
+ephemeral-rollups-sdk = { git = "https://github.com/magicblock-labs/ephemeral-rollups-sdk", rev = "60761a7f76b3b417496d4a5fcca8412e35d44f5b", features = [
+    "anchor-compat",
+] }

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["api", "program", "sdk", "src", "vrf", "vrf-cli", "vrf-oracle"]
+members = ["api", "program", "src", "vrf", "vrf-cli", "vrf-oracle"]
 
 [workspace.package]
 version = "0.4.1"
