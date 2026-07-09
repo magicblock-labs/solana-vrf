@@ -1,6 +1,10 @@
 use ephemeral_vrf_api::prelude::*;
 use solana_program::msg;
 
+/// Upper bound on removals per purge call, keeping compute well below the
+/// transaction budget for any queue size. Repeat the call to purge the rest.
+const MAX_REMOVALS_PER_PURGE: usize = 512;
+
 /// Remove all requests in the queue whose age (current_slot - item.slot)
 /// exceeds the TTL.
 ///
@@ -36,34 +40,28 @@ pub fn process_purge_expired_requests(accounts: &[AccountInfo<'_>], data: &[u8])
     let queue_data = &mut acc_data[8..];
     let mut queue_acc = QueueAccount::load(queue_data)?;
 
-    // Scan and remove expired items by logical index
+    // Remove expired items in a single pass over the physical layout.
+    // Removals are capped per call so compute stays bounded regardless of
+    // queue size; the instruction is permissionless, so callers simply
+    // invoke it again if expired items remain.
     let mut total_cost: u64 = 0;
-    let mut i: usize = 0;
-    msg!("Items in the queue: {}", queue_acc.len());
-    while i < queue_acc.len() {
-        // Safe to unwrap: index < len()
-        let item = queue_acc
-            .get_item_by_index(i)
-            .ok_or(ProgramError::InvalidAccountData)?;
-        let age = current_slot.saturating_sub(item.slot);
-        if age > QUEUE_TTL_SLOTS {
-            let cost = if item.priority_request == 1 {
+    let removed = queue_acc.remove_items_where(MAX_REMOVALS_PER_PURGE, |item| {
+        if current_slot.saturating_sub(item.slot) > QUEUE_TTL_SLOTS {
+            total_cost = total_cost.saturating_add(if item.priority_request == 1 {
                 VRF_HIGH_PRIORITY_LAMPORTS_COST
             } else {
                 VRF_LAMPORTS_COST
-            };
-            total_cost = total_cost.saturating_add(cost);
-            let _ = queue_acc.remove_item(i)?;
-            msg!(
-                "Removing item {} from queue, new size {}",
-                i,
-                queue_acc.len()
-            );
-            // do not increment i; next item shifts into this index
+            });
+            true
         } else {
-            i += 1;
+            false
         }
-    }
+    });
+    msg!(
+        "Purged {} expired items, {} remaining in queue",
+        removed,
+        queue_acc.len()
+    );
 
     // Send the fees to the oracle.
     // The oracle also accrue fees on malformed/expired requests to

@@ -499,6 +499,44 @@ impl<'a> QueueAccount<'a> {
         Err(EphemeralVrfError::InvalidQueueIndex.into())
     }
 
+    /// Remove every used item for which `should_remove` returns true, in a
+    /// single physical pass, trimming trailing holes once at the end.
+    /// Stops after `max_removals` to keep compute bounded (remaining matches
+    /// can be removed by a subsequent call). Returns the number removed.
+    pub fn remove_items_where(
+        &mut self,
+        max_removals: usize,
+        mut should_remove: impl FnMut(&QueueItem) -> bool,
+    ) -> usize {
+        let mut cursor = Self::items_start();
+        let end = core::cmp::min(self.acc.len(), self.header.cursor as usize);
+        let align = core::mem::align_of::<QueueItem>();
+        let mut removed = 0usize;
+
+        while removed < max_removals && cursor + size_of::<QueueItem>() <= end {
+            let bytes = &mut self.acc[cursor..cursor + size_of::<QueueItem>()];
+            let mut item = Self::read_item_unaligned(bytes);
+
+            if item.used == 1 && should_remove(&item) {
+                item.used = 0;
+                self.header.item_count = self.header.item_count.saturating_sub(1);
+                Self::write_item_unaligned(bytes, &item);
+                removed += 1;
+            }
+
+            let next = Self::item_next(cursor, &item, align);
+            if next <= cursor {
+                break;
+            }
+            cursor = next;
+        }
+
+        if removed > 0 {
+            self.trim_trailing_holes();
+        }
+        removed
+    }
+
     /// Find first used item by id, returning its logical index and value.
     pub fn find_item_by_id(&self, id: &[u8; 32]) -> Option<(usize, QueueItem)> {
         let mut current = 0usize;
@@ -661,6 +699,41 @@ mod tests {
 
         let tail = queue.get_item_by_index(2).unwrap();
         assert_eq!(tail.id, [2; 32]);
+    }
+
+    #[test]
+    fn remove_items_where_purges_in_one_pass_and_trims() {
+        let discriminator = [1u8; 8];
+        let metas: [CompactAccountMeta; 0] = [];
+        let args: [u8; 0] = [];
+        let mut data = vec![0u8; 4096];
+        let mut queue = QueueAccount::load(&mut data).unwrap();
+
+        for (i, slot) in [10u64, 100, 10, 10, 100].into_iter().enumerate() {
+            let mut item = test_item(i as u8);
+            item.slot = slot;
+            queue.add_item(&item, &discriminator, &metas, &args).unwrap();
+        }
+        let cursor_full = queue.header.cursor;
+
+        // Cap of 2 removes only the first two matches.
+        let removed = queue.remove_items_where(2, |item| item.slot == 10);
+        assert_eq!(removed, 2);
+        assert_eq!(queue.len(), 3);
+
+        // Second call removes the remaining match; survivors keep order.
+        let removed = queue.remove_items_where(usize::MAX, |item| item.slot == 10);
+        assert_eq!(removed, 1);
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue.get_item_by_index(0).unwrap().id, [1; 32]);
+        assert_eq!(queue.get_item_by_index(1).unwrap().id, [4; 32]);
+
+        // Removing the tail item trims the cursor back.
+        let removed = queue.remove_items_where(usize::MAX, |item| item.slot == 100);
+        assert_eq!(removed, 2);
+        assert!(queue.is_empty());
+        assert!(queue.header.cursor < cursor_full);
+        assert_eq!(queue.header.cursor as usize, QueueAccount::items_start());
     }
 
     #[test]
