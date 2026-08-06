@@ -35,6 +35,7 @@ use tokio::time::sleep;
 
 const ANCHOR_CONSTRAINT_ADDRESS_ERROR: u32 = 2012;
 const BLOCKHASH_MAX_AGE: Duration = Duration::from_secs(3);
+const QUICK_RETRY_MS: u64 = 50;
 const RETRY_SLOT_MS: u64 = 400;
 
 pub async fn fetch_and_process_program_accounts(
@@ -215,6 +216,7 @@ pub async fn process_oracle_queue(
                     return;
                 }
                 let mut attempts = 0;
+                let mut backoff_attempts = 0;
 
                 while attempts < 100 {
                     // Retry transient send errors on the normal backoff; deterministic
@@ -248,6 +250,13 @@ pub async fn process_oracle_queue(
                                 if code == EphemeralVrfError::RandomnessRequestNotFound as u32 {
                                     break;
                                 }
+                                if code
+                                    == EphemeralVrfError::OracleMustProvideInDifferentSlot as u32
+                                {
+                                    sleep(Duration::from_millis(QUICK_RETRY_MS)).await;
+                                    attempts += 1;
+                                    continue;
+                                }
                                 if code == ANCHOR_CONSTRAINT_ADDRESS_ERROR {
                                     let purge_slot =
                                         item.slot.saturating_add(QUEUE_TTL_SLOTS).saturating_add(1);
@@ -274,11 +283,12 @@ pub async fn process_oracle_queue(
                     // is aborted once the item disappears. Retry after 1, 2, 4, ...
                     // slots (capped); the refresh only guards blockhash expiry.
                     sleep(Duration::from_millis(
-                        RETRY_SLOT_MS * (1u64 << attempts.min(5)).min(32),
+                        RETRY_SLOT_MS * (1u64 << backoff_attempts.min(5)).min(32),
                     ))
                     .await;
                     blockhash_cache.refresh_if_stale(BLOCKHASH_MAX_AGE).await;
                     attempts += 1;
+                    backoff_attempts += 1;
                 }
 
                 // Task stopped or attempts exhausted. Remove from active_tasks and
