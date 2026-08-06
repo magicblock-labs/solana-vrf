@@ -1,13 +1,17 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use serde::Deserialize;
+use serde_json::{json, Value};
 use solana_client::{
+    client_error::ClientError,
     pubsub_client::PubsubClient,
     rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
+    rpc_request::RpcRequest,
 };
 use solana_commitment_config::CommitmentConfig;
 use solana_sdk::{pubkey::Pubkey, signature::Keypair};
 use std::{collections::HashMap, sync::Arc};
-use tokio::sync::RwLock;
+use tokio::sync::{watch, RwLock};
 use tokio::task::JoinHandle;
 
 use helius_laserstream::{
@@ -16,6 +20,7 @@ use helius_laserstream::{
         subscribe_request_filter_accounts_filter_memcmp::Data as AccountsFilterMemcmpOneof,
         SubscribeRequest, SubscribeRequestFilterAccounts, SubscribeRequestFilterAccountsFilter,
         SubscribeRequestFilterAccountsFilterMemcmp, SubscribeRequestFilterBlocksMeta,
+        SubscribeRequestFilterSlots,
     },
     subscribe, LaserstreamConfig,
 };
@@ -39,6 +44,91 @@ pub type InflightRequestsMap = HashMap<QueueKey, InflightById>;
 pub type ActiveTasksById = HashMap<RequestId, JoinHandle<()>>;
 pub type ActiveTasksMap = HashMap<QueueKey, ActiveTasksById>;
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DelegationStatusResponse {
+    is_delegated: bool,
+}
+
+#[derive(Clone)]
+pub struct SlotTracker {
+    sender: watch::Sender<u64>,
+}
+
+impl SlotTracker {
+    fn new() -> Self {
+        let (sender, _) = watch::channel(0);
+        Self { sender }
+    }
+
+    pub fn current(&self) -> u64 {
+        *self.sender.borrow()
+    }
+
+    pub fn update(&self, slot: u64) {
+        self.sender.send_if_modified(|current| {
+            if slot > *current {
+                *current = slot;
+                true
+            } else {
+                false
+            }
+        });
+    }
+
+    pub async fn wait_for_slot(&self, target: u64) {
+        let mut receiver = self.sender.subscribe();
+        while *receiver.borrow_and_update() < target {
+            if receiver.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SlotTracker;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn slot_tracker_is_monotonic_and_race_free() {
+        let tracker = SlotTracker::new();
+        tracker.update(4);
+        tracker.update(3);
+
+        assert_eq!(tracker.current(), 4);
+        tracker.wait_for_slot(4).await;
+
+        let waiter = {
+            let tracker = tracker.clone();
+            tokio::spawn(async move { tracker.wait_for_slot(5).await })
+        };
+        tokio::task::yield_now().await;
+        tracker.update(5);
+
+        tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let waiter = {
+            let tracker = tracker.clone();
+            tokio::spawn(async move { tracker.wait_for_slot(7).await })
+        };
+        tokio::task::yield_now().await;
+        tracker.update(6);
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+        tracker.update(7);
+
+        tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+}
+
 pub struct OracleClient {
     pub keypair: Keypair,
     pub rpc_url: String,
@@ -58,6 +148,8 @@ pub struct OracleClient {
     pub active_tasks: Arc<RwLock<ActiveTasksMap>>,
     // Whether to skip preflight when sending transactions
     pub skip_preflight: bool,
+    pub slot_tracker: SlotTracker,
+    delegated_queue_statuses: Arc<RwLock<Option<HashMap<Pubkey, bool>>>>,
 }
 
 #[async_trait]
@@ -90,6 +182,8 @@ impl OracleClient {
             inflight_requests: Arc::new(RwLock::new(HashMap::new())),
             active_tasks: Arc::new(RwLock::new(HashMap::new())),
             skip_preflight,
+            slot_tracker: SlotTracker::new(),
+            delegated_queue_statuses: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -102,7 +196,10 @@ impl OracleClient {
             self.rpc_url.clone(),
             CommitmentConfig::processed(),
         ));
+        self.initialize_delegated_queue_filter(&rpc_client).await?;
         let blockhash_cache = Arc::new(BlockhashCache::new(Arc::clone(&rpc_client)).await);
+        let (_, initial_slot) = blockhash_cache.get_blockhash_and_slot().await;
+        self.slot_tracker.update(initial_slot);
         fetch_and_process_program_accounts(
             &self,
             &rpc_client,
@@ -165,6 +262,59 @@ impl OracleClient {
         }
     }
 
+    async fn initialize_delegated_queue_filter(&self, rpc_client: &RpcClient) -> Result<()> {
+        let version = rpc_client
+            .send::<Value>(RpcRequest::GetVersion, Value::Null)
+            .await?;
+        if version.get("magicblock-core").is_some() {
+            *self.delegated_queue_statuses.write().await = Some(HashMap::new());
+        }
+        Ok(())
+    }
+
+    pub async fn should_process_queue(&self, rpc_client: &RpcClient, queue: &Pubkey) -> bool {
+        {
+            let statuses = self.delegated_queue_statuses.read().await;
+            let Some(statuses) = statuses.as_ref() else {
+                return true;
+            };
+            if let Some(is_delegated) = statuses.get(queue) {
+                return *is_delegated;
+            }
+        }
+
+        match Self::get_delegation_status(rpc_client, queue).await {
+            Ok(is_delegated) => {
+                if let Some(statuses) = self.delegated_queue_statuses.write().await.as_mut() {
+                    statuses.insert(*queue, is_delegated);
+                }
+                if !is_delegated {
+                    info!("Ignoring undelegated queue: {queue}");
+                }
+                is_delegated
+            }
+            Err(error) => {
+                warn!("Failed to check delegation status for queue {queue}: {error}");
+                false
+            }
+        }
+    }
+
+    async fn get_delegation_status(
+        rpc_client: &RpcClient,
+        queue: &Pubkey,
+    ) -> Result<bool, ClientError> {
+        rpc_client
+            .send::<DelegationStatusResponse>(
+                RpcRequest::Custom {
+                    method: "getDelegationStatus",
+                },
+                json!([queue.to_string()]),
+            )
+            .await
+            .map(|status| status.is_delegated)
+    }
+
     async fn create_update_source(
         self: &Arc<Self>,
         blockhash_cache: &Arc<BlockhashCache>,
@@ -205,10 +355,20 @@ impl OracleClient {
                 SubscribeRequestFilterBlocksMeta::default(),
             );
 
+            let mut slots = HashMap::new();
+            slots.insert(
+                "all".to_string(),
+                SubscribeRequestFilterSlots {
+                    filter_by_commitment: Some(false),
+                    interslot_updates: Some(true),
+                },
+            );
+
             let (stream, _handle) = subscribe(
                 config,
                 SubscribeRequest {
                     accounts: filters,
+                    slots,
                     blocks_meta,
                     ..Default::default()
                 },
@@ -216,6 +376,7 @@ impl OracleClient {
             Ok(Box::new(LaserstreamSource {
                 stream: Box::pin(stream),
                 blockhash_cache: Arc::clone(blockhash_cache),
+                slot_tracker: self.slot_tracker.clone(),
             }))
         } else {
             info!("Connecting to WebSocket: {}", self.websocket_url);
@@ -230,9 +391,13 @@ impl OracleClient {
             };
             let (client, sub) =
                 PubsubClient::program_subscribe(&self.websocket_url, &PROGRAM_ID, Some(config))?;
+            let (slot_client, slot_sub) = PubsubClient::slot_subscribe(&self.websocket_url)?;
             Ok(Box::new(WebSocketSource {
                 client,
                 subscription: sub,
+                slot_client,
+                slot_subscription: slot_sub,
+                slot_tracker: self.slot_tracker.clone(),
             }))
         }
     }

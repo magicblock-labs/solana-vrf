@@ -31,12 +31,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task;
-use tokio::time::sleep;
 
 const ANCHOR_CONSTRAINT_ADDRESS_ERROR: u32 = 2012;
 const BLOCKHASH_MAX_AGE: Duration = Duration::from_secs(3);
-const QUICK_RETRY_MS: u64 = 50;
-const RETRY_SLOT_MS: u64 = 400;
 
 pub async fn fetch_and_process_program_accounts(
     oracle_client: &Arc<OracleClient>,
@@ -111,7 +108,9 @@ pub async fn process_oracle_queue(
     account_bytes: Arc<Vec<u8>>,
     notification_slot: Option<u64>,
 ) {
-    if oracle_queue_pda(&oracle_client.keypair.pubkey(), oracle_queue.index).0 == *queue {
+    if oracle_queue_pda(&oracle_client.keypair.pubkey(), oracle_queue.index).0 == *queue
+        && oracle_client.should_process_queue(rpc_client, queue).await
+    {
         if oracle_queue.item_count > 0 {
             info!(
                 "Processing queue: {}, with len: {}",
@@ -217,8 +216,19 @@ pub async fn process_oracle_queue(
                 }
                 let mut attempts = 0;
                 let mut backoff_attempts = 0;
+                blockhash_cache.refresh_if_stale(BLOCKHASH_MAX_AGE).await;
 
                 while attempts < 100 {
+                    let first_valid_slot = item.slot.saturating_add(1);
+                    if oracle_client_for_proc.slot_tracker.current() < first_valid_slot {
+                        oracle_client_for_proc
+                            .slot_tracker
+                            .wait_for_slot(first_valid_slot)
+                            .await;
+                    }
+                    let attempt_slot = oracle_client_for_proc.slot_tracker.current();
+                    let mut use_backoff = false;
+
                     // Retry transient send errors on the normal backoff; deterministic
                     // callback address errors wait for expiry and purge.
                     match ProcessableItem(item)
@@ -240,6 +250,7 @@ pub async fn process_oracle_queue(
                             Pubkey::new_from_array(item.id)
                         ),
                         Err(error) => {
+                            use_backoff = true;
                             if let Some(TransactionError::InstructionError(
                                 1,
                                 InstructionError::Custom(code),
@@ -253,26 +264,22 @@ pub async fn process_oracle_queue(
                                 if code
                                     == EphemeralVrfError::OracleMustProvideInDifferentSlot as u32
                                 {
-                                    sleep(Duration::from_millis(QUICK_RETRY_MS)).await;
+                                    blockhash_cache.refresh_if_stale(BLOCKHASH_MAX_AGE).await;
+                                    oracle_client_for_proc
+                                        .slot_tracker
+                                        .wait_for_slot(attempt_slot.saturating_add(1))
+                                        .await;
                                     attempts += 1;
                                     continue;
                                 }
                                 if code == ANCHOR_CONSTRAINT_ADDRESS_ERROR {
                                     let purge_slot =
                                         item.slot.saturating_add(QUEUE_TTL_SLOTS).saturating_add(1);
-                                    loop {
-                                        let (_, current_slot) =
-                                            blockhash_cache.get_blockhash_and_slot().await;
-                                        if current_slot >= purge_slot {
-                                            break;
-                                        }
-                                        let wait_slots = purge_slot - current_slot;
-                                        sleep(Duration::from_millis(
-                                            RETRY_SLOT_MS.saturating_mul(wait_slots),
-                                        ))
+                                    oracle_client_for_proc
+                                        .slot_tracker
+                                        .wait_for_slot(purge_slot)
                                         .await;
-                                        blockhash_cache.refresh_if_stale(BLOCKHASH_MAX_AGE).await;
-                                    }
+                                    blockhash_cache.refresh_if_stale(BLOCKHASH_MAX_AGE).await;
                                     continue;
                                 }
                             }
@@ -280,15 +287,23 @@ pub async fn process_oracle_queue(
                     }
 
                     // Fulfillment is observed via the queue subscription: this task
-                    // is aborted once the item disappears. Retry after 1, 2, 4, ...
-                    // slots (capped); the refresh only guards blockhash expiry.
-                    sleep(Duration::from_millis(
-                        RETRY_SLOT_MS * (1u64 << backoff_attempts.min(5)).min(32),
-                    ))
-                    .await;
+                    // is aborted once the item disappears. Accepted transactions retry
+                    // next slot; transient errors back off by 1, 2, 4, ... slots.
+                    let retry_slots = if use_backoff {
+                        (1u64 << backoff_attempts.min(5)).min(32)
+                    } else {
+                        backoff_attempts = 0;
+                        1
+                    };
                     blockhash_cache.refresh_if_stale(BLOCKHASH_MAX_AGE).await;
+                    oracle_client_for_proc
+                        .slot_tracker
+                        .wait_for_slot(attempt_slot.saturating_add(retry_slots))
+                        .await;
                     attempts += 1;
-                    backoff_attempts += 1;
+                    if use_backoff {
+                        backoff_attempts += 1;
+                    }
                 }
 
                 // Task stopped or attempts exhausted. Remove from active_tasks and
@@ -348,7 +363,8 @@ impl ProcessableItem {
             (commitment_base, commitment_hash, s),
         ));
 
-        let (blockhash, current_slot) = blockhash_cache.get_blockhash_and_slot().await;
+        let (blockhash, _) = blockhash_cache.get_blockhash_and_slot().await;
+        let current_slot = oracle_client.slot_tracker.current();
 
         // Check whether the request is expired
         let age = current_slot.saturating_sub(self.0.slot);
