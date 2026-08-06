@@ -4,8 +4,8 @@ use anyhow::Result;
 use ephemeral_vrf::vrf::{compute_vrf, verify_vrf};
 use ephemeral_vrf_api::{
     prelude::{
-        provide_randomness_with_identity_mode, purge_expired_requests, Queue, QueueAccount,
-        QueueItem, QUEUE_TTL_SLOTS,
+        provide_randomness_with_identity_mode, purge_expired_requests, EphemeralVrfError, Queue,
+        QueueAccount, QueueItem, QUEUE_TTL_SLOTS,
     },
     state::oracle_queue_pda,
     ID as PROGRAM_ID,
@@ -14,18 +14,28 @@ use futures_util::future::join_all;
 use futures_util::FutureExt;
 use log::{error, info, trace, warn};
 use solana_account_decoder::UiAccountEncoding;
+use solana_client::client_error::ClientError;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_client::rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig};
 use solana_client::rpc_filter::RpcFilterType;
 use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_compute_budget_interface::ComputeBudgetInstruction;
 use solana_curve25519::{ristretto::PodRistrettoPoint, scalar::PodScalar};
-use solana_sdk::{pubkey::Pubkey, signature::Signer, transaction::Transaction};
+use solana_sdk::{
+    instruction::InstructionError,
+    pubkey::Pubkey,
+    signature::Signer,
+    transaction::{Transaction, TransactionError},
+};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task;
 use tokio::time::sleep;
+
+const ANCHOR_CONSTRAINT_ADDRESS_ERROR: u32 = 2012;
+const BLOCKHASH_MAX_AGE: Duration = Duration::from_secs(3);
+const RETRY_SLOT_MS: u64 = 400;
 
 pub async fn fetch_and_process_program_accounts(
     oracle_client: &Arc<OracleClient>,
@@ -190,29 +200,25 @@ pub async fn process_oracle_queue(
             let oracle_client_for_proc = Arc::clone(&oracle_client);
             let oracle_client_for_cleanup = Arc::clone(&oracle_client);
 
-            // Only spawn a task if this request is not already in-flight for this queue
-            let should_spawn = {
-                let mut inflight_all = oracle_client.inflight_requests.write().await;
-                let inflight_for_queue = inflight_all.entry(queue_key_spawn.clone()).or_default();
-                if let std::collections::hash_map::Entry::Vacant(e) =
-                    inflight_for_queue.entry(item.id)
-                {
-                    e.insert(item.slot);
-                    true
-                } else {
-                    false
-                }
-            };
-
-            if !should_spawn {
+            // Keep the inflight reservation locked through task publication so a
+            // queue-removal update cannot leave an untracked task between the maps.
+            let mut inflight_all = oracle_client.inflight_requests.write().await;
+            let inflight_for_queue = inflight_all.entry(queue_key_spawn.clone()).or_default();
+            if inflight_for_queue.contains_key(&item.id) {
                 continue;
             }
+            inflight_for_queue.insert(item.id, item.slot);
 
+            let (start_tx, start_rx) = tokio::sync::oneshot::channel();
             let handle = tokio::spawn(async move {
+                if start_rx.await.is_err() {
+                    return;
+                }
                 let mut attempts = 0;
-                let mut confirmed_success = false;
 
                 while attempts < 100 {
+                    // Retry transient send errors on the normal backoff; deterministic
+                    // callback address errors wait for expiry and purge.
                     match ProcessableItem(item)
                         .process_item(
                             &oracle_client_for_proc,
@@ -222,68 +228,63 @@ pub async fn process_oracle_queue(
                             &queue,
                             &oracle_queue,
                             account_bytes_task.as_slice(),
+                            attempts,
                         )
                         .await
                     {
-                        Ok(signature) => {
-                            trace!(
-                                "Transaction: {}, for id {}",
-                                signature,
-                                Pubkey::new_from_array(item.id)
-                            );
-                            let sig = match signature.parse::<solana_sdk::signature::Signature>() {
-                                Ok(sig) => sig,
-                                Err(_) => {
+                        Ok(signature) => trace!(
+                            "Transaction: {}, for id {}",
+                            signature,
+                            Pubkey::new_from_array(item.id)
+                        ),
+                        Err(error) => {
+                            if let Some(TransactionError::InstructionError(
+                                1,
+                                InstructionError::Custom(code),
+                            )) = error
+                                .downcast_ref::<ClientError>()
+                                .and_then(ClientError::get_transaction_error)
+                            {
+                                if code == EphemeralVrfError::RandomnessRequestNotFound as u32 {
+                                    break;
+                                }
+                                if code == ANCHOR_CONSTRAINT_ADDRESS_ERROR {
+                                    let purge_slot =
+                                        item.slot.saturating_add(QUEUE_TTL_SLOTS).saturating_add(1);
+                                    loop {
+                                        let (_, current_slot) =
+                                            blockhash_cache.get_blockhash_and_slot().await;
+                                        if current_slot >= purge_slot {
+                                            break;
+                                        }
+                                        let wait_slots = purge_slot - current_slot;
+                                        sleep(Duration::from_millis(
+                                            RETRY_SLOT_MS.saturating_mul(wait_slots),
+                                        ))
+                                        .await;
+                                        blockhash_cache.refresh_if_stale(BLOCKHASH_MAX_AGE).await;
+                                    }
                                     continue;
                                 }
-                            };
-
-                            let result = rpc_client
-                                .confirm_transaction_with_commitment(
-                                    &sig,
-                                    CommitmentConfig::processed(),
-                                )
-                                .await;
-
-                            match result {
-                                Ok(success) => {
-                                    if success.value {
-                                        info!(
-                                            "Transaction successfully confirmed: {}, for id: {}",
-                                            signature,
-                                            Pubkey::new_from_array(item.id)
-                                        );
-                                        confirmed_success = true;
-                                        break;
-                                    } else {
-                                        attempts += 1;
-                                        blockhash_cache.refresh_blockhash().await;
-                                        if attempts > 20 {
-                                            let delay_ms = 10 * (attempts - 20);
-                                            sleep(Duration::from_millis(delay_ms)).await;
-                                        }
-                                    }
-                                }
-                                Err(err) => {
-                                    warn!("Transaction {sig} failed to confirm: {err}");
-                                    attempts += 3;
-                                    blockhash_cache.refresh_blockhash().await;
-                                }
                             }
-                        }
-                        Err(_) => {
-                            // Response may be in the same slot, we retry with linear backoff
-                            blockhash_cache.refresh_blockhash().await;
-                            if attempts > 5 {
-                                let delay_ms = 20 * (attempts - 5);
-                                sleep(Duration::from_millis(delay_ms)).await;
-                            }
-                            attempts += 1;
                         }
                     }
+
+                    // Fulfillment is observed via the queue subscription: this task
+                    // is aborted once the item disappears. Retry after 1, 2, 4, ...
+                    // slots (capped); the refresh only guards blockhash expiry.
+                    sleep(Duration::from_millis(
+                        RETRY_SLOT_MS * (1u64 << attempts.min(5)).min(32),
+                    ))
+                    .await;
+                    blockhash_cache.refresh_if_stale(BLOCKHASH_MAX_AGE).await;
+                    attempts += 1;
                 }
 
-                // Task finished. Remove from active_tasks. If not confirmed, also clear inflight to allow retry.
+                // Task stopped or attempts exhausted. Remove from active_tasks and
+                // clear inflight so a later queue snapshot can retry it if needed.
+                // (Successful items never reach here: their tasks are aborted by the
+                // queue-diff path, which also cleans both maps.)
                 {
                     let mut tasks_all = oracle_client_for_cleanup.active_tasks.write().await;
                     if let Some(tasks_for_queue) = tasks_all.get_mut(&queue_key_spawn) {
@@ -291,7 +292,7 @@ pub async fn process_oracle_queue(
                     }
                 }
 
-                if !confirmed_success {
+                {
                     let mut inflight_all =
                         oracle_client_for_cleanup.inflight_requests.write().await;
                     if let Some(inflight_for_queue) = inflight_all.get_mut(&queue_key_spawn) {
@@ -300,12 +301,13 @@ pub async fn process_oracle_queue(
                 }
             });
 
-            // Track the task handle for potential cancellation if the item disappears from the queue
             {
                 let mut tasks_all = oracle_client.active_tasks.write().await;
                 let tasks_for_queue = tasks_all.entry(queue_key.clone()).or_default();
                 tasks_for_queue.insert(item.id, handle);
             }
+            drop(inflight_all);
+            let _ = start_tx.send(());
         }
     }
 }
@@ -324,6 +326,7 @@ impl ProcessableItem {
         queue_pubkey: &Pubkey,
         queue_meta: &Queue,
         account_bytes: &[u8],
+        attempt: u64,
     ) -> Result<String> {
         let (output, (commitment_base, commitment_hash, s)) =
             compute_vrf(oracle_client.oracle_vrf_sk, vrf_input);
@@ -370,6 +373,9 @@ impl ProcessableItem {
                 _ => 300_000,
             }
         };
+        // Nonce: vary the compute limit so each retry is a distinct
+        // transaction under the same cached blockhash.
+        let budget = budget + (attempt % 256) as u32;
         let tx = Transaction::new_signed_with_payer(
             &[ComputeBudgetInstruction::set_compute_unit_limit(budget), ix],
             Some(&oracle_client.keypair.pubkey()),
@@ -382,7 +388,7 @@ impl ProcessableItem {
             .send_transaction_with_config(
                 &tx,
                 RpcSendTransactionConfig {
-                    skip_preflight: oracle_client.skip_preflight,
+                    skip_preflight: oracle_client.skip_preflight && attempt == 0,
                     preflight_commitment: Some(CommitmentLevel::Processed),
                     ..Default::default()
                 },

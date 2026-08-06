@@ -1,4 +1,4 @@
-use std::{pin::Pin, str::FromStr};
+use std::{pin::Pin, str::FromStr, sync::Arc};
 
 use async_trait::async_trait;
 use crossbeam_channel::Receiver;
@@ -8,6 +8,7 @@ use solana_client::{
 };
 use solana_sdk::pubkey::Pubkey;
 
+use crate::blockhash_cache::BlockhashCache;
 use crate::oracle::client::QueueUpdateSource;
 use ephemeral_vrf_api::prelude::Queue;
 use ephemeral_vrf_api::ID as PROGRAM_ID;
@@ -44,6 +45,7 @@ impl QueueUpdateSource for WebSocketSource {
 pub struct LaserstreamSource {
     pub stream:
         Pin<Box<dyn futures_core::Stream<Item = Result<SubscribeUpdate, LaserstreamError>> + Send>>,
+    pub blockhash_cache: Arc<BlockhashCache>,
 }
 
 #[async_trait]
@@ -51,12 +53,20 @@ impl QueueUpdateSource for LaserstreamSource {
     async fn next(&mut self) -> Option<(Pubkey, Queue, Vec<u8>, u64)> {
         while let Some(result) = self.stream.next().await {
             let update = result.ok()?;
-            if let Some(UpdateOneof::Account(acc)) = update.update_oneof {
-                let slot = acc.slot;
-                let acc = acc.account?;
-                let queue = Queue::try_from_bytes(&acc.data).ok()?;
-                let pubkey = Pubkey::new_from_array(acc.pubkey.try_into().ok()?);
-                return Some((pubkey, *queue, acc.data, slot));
+            match update.update_oneof {
+                Some(UpdateOneof::Account(acc)) => {
+                    let slot = acc.slot;
+                    let acc = acc.account?;
+                    let queue = Queue::try_from_bytes(&acc.data).ok()?;
+                    let pubkey = Pubkey::new_from_array(acc.pubkey.try_into().ok()?);
+                    return Some((pubkey, *queue, acc.data, slot));
+                }
+                Some(UpdateOneof::BlockMeta(meta)) => {
+                    if let Ok(hash) = meta.blockhash.parse() {
+                        self.blockhash_cache.set_blockhash(hash, meta.slot).await;
+                    }
+                }
+                _ => {}
             }
         }
         None

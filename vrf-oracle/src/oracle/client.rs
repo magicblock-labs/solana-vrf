@@ -15,7 +15,7 @@ use helius_laserstream::{
         subscribe_request_filter_accounts_filter::Filter as AccountsFilterOneof,
         subscribe_request_filter_accounts_filter_memcmp::Data as AccountsFilterMemcmpOneof,
         SubscribeRequest, SubscribeRequestFilterAccounts, SubscribeRequestFilterAccountsFilter,
-        SubscribeRequestFilterAccountsFilterMemcmp,
+        SubscribeRequestFilterAccountsFilterMemcmp, SubscribeRequestFilterBlocksMeta,
     },
     subscribe, LaserstreamConfig,
 };
@@ -118,6 +118,7 @@ impl OracleClient {
             let blockhash_cache_clone = Arc::clone(&blockhash_cache);
             tokio::spawn(async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+                interval.tick().await;
                 loop {
                     interval.tick().await;
                     if let Err(err) = fetch_and_process_program_accounts(
@@ -135,7 +136,7 @@ impl OracleClient {
         }
 
         loop {
-            match self.create_update_source().await {
+            match self.create_update_source(&blockhash_cache).await {
                 Ok(mut source) => {
                     info!("Update source connected successfully");
                     while let Some((pubkey, queue, bytes, notification_slot)) = source.next().await
@@ -164,7 +165,10 @@ impl OracleClient {
         }
     }
 
-    async fn create_update_source(self: &Arc<Self>) -> Result<Box<dyn QueueUpdateSource>> {
+    async fn create_update_source(
+        self: &Arc<Self>,
+        blockhash_cache: &Arc<BlockhashCache>,
+    ) -> Result<Box<dyn QueueUpdateSource>> {
         if let (Some(api_key), Some(endpoint)) =
             (&self.laserstream_api_key, &self.laserstream_endpoint)
         {
@@ -194,15 +198,24 @@ impl OracleClient {
                 },
             );
 
+            // Block metadata on the same stream feeds the blockhash cache.
+            let mut blocks_meta = HashMap::new();
+            blocks_meta.insert(
+                "all".to_string(),
+                SubscribeRequestFilterBlocksMeta::default(),
+            );
+
             let (stream, _handle) = subscribe(
                 config,
                 SubscribeRequest {
                     accounts: filters,
+                    blocks_meta,
                     ..Default::default()
                 },
             );
             Ok(Box::new(LaserstreamSource {
                 stream: Box::pin(stream),
+                blockhash_cache: Arc::clone(blockhash_cache),
             }))
         } else {
             info!("Connecting to WebSocket: {}", self.websocket_url);
