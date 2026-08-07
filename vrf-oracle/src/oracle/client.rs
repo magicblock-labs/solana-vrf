@@ -57,7 +57,7 @@ struct DelegationStatusResponse {
 
 const EARLY_SEND_DIVISOR: u32 = 20;
 const EARLY_SEND_MAX: Duration = Duration::from_millis(20);
-const NON_ER_EARLY_SEND_BONUS: Duration = Duration::from_millis(200);
+const NON_ER_EARLY_SEND_BONUS: Duration = Duration::from_millis(400);
 const NON_ER_MIN_SLOT_DURATION: Duration = Duration::from_millis(200);
 const MIN_SLOT_SAMPLE: Duration = Duration::from_millis(1);
 const MIN_SLOT_SAMPLES: u8 = 3;
