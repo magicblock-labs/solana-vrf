@@ -217,6 +217,19 @@ pub async fn process_oracle_queue(
                 let mut attempts = 0;
                 let mut backoff_attempts = 0;
                 blockhash_cache.refresh_if_stale(BLOCKHASH_MAX_AGE).await;
+                let mut prepared_first = Some(
+                    ProcessableItem(item)
+                        .prepare_transaction(
+                            &oracle_client_for_proc,
+                            &blockhash_cache,
+                            &input_seed,
+                            &queue,
+                            &oracle_queue,
+                            account_bytes_task.as_slice(),
+                            attempts,
+                        )
+                        .await,
+                );
 
                 while attempts < 100 {
                     let first_valid_slot = item.slot.saturating_add(1);
@@ -228,21 +241,36 @@ pub async fn process_oracle_queue(
                     }
                     let attempt_slot = oracle_client_for_proc.slot_tracker.current();
                     let mut use_backoff = false;
+                    let transaction = match prepared_first.take() {
+                        Some(transaction)
+                            if attempt_slot.saturating_sub(item.slot) <= QUEUE_TTL_SLOTS =>
+                        {
+                            transaction
+                        }
+                        _ => {
+                            ProcessableItem(item)
+                                .prepare_transaction(
+                                    &oracle_client_for_proc,
+                                    &blockhash_cache,
+                                    &input_seed,
+                                    &queue,
+                                    &oracle_queue,
+                                    account_bytes_task.as_slice(),
+                                    attempts,
+                                )
+                                .await
+                        }
+                    };
 
                     // Retry transient send errors on the normal backoff; deterministic
                     // callback address errors wait for expiry and purge.
-                    match ProcessableItem(item)
-                        .process_item(
-                            &oracle_client_for_proc,
-                            &rpc_client,
-                            &blockhash_cache,
-                            &input_seed,
-                            &queue,
-                            &oracle_queue,
-                            account_bytes_task.as_slice(),
-                            attempts,
-                        )
-                        .await
+                    match ProcessableItem::send_transaction(
+                        &oracle_client_for_proc,
+                        &rpc_client,
+                        &transaction,
+                        attempts,
+                    )
+                    .await
                     {
                         Ok(signature) => trace!(
                             "Transaction: {}, for id {}",
@@ -342,17 +370,16 @@ pub struct ProcessableItem(pub QueueItem);
 
 impl ProcessableItem {
     #[allow(clippy::too_many_arguments)]
-    pub async fn process_item(
+    async fn prepare_transaction(
         &self,
         oracle_client: &OracleClient,
-        rpc_client: &Arc<RpcClient>,
         blockhash_cache: &BlockhashCache,
         vrf_input: &[u8; 32],
         queue_pubkey: &Pubkey,
         queue_meta: &Queue,
         account_bytes: &[u8],
         attempt: u64,
-    ) -> Result<String> {
+    ) -> Transaction {
         let (output, (commitment_base, commitment_hash, s)) =
             compute_vrf(oracle_client.oracle_vrf_sk, vrf_input);
 
@@ -402,17 +429,24 @@ impl ProcessableItem {
         // Nonce: vary the compute limit so each retry is a distinct
         // transaction under the same cached blockhash.
         let budget = budget + (attempt % 256) as u32;
-        let tx = Transaction::new_signed_with_payer(
+        Transaction::new_signed_with_payer(
             &[ComputeBudgetInstruction::set_compute_unit_limit(budget), ix],
             Some(&oracle_client.keypair.pubkey()),
             &[&oracle_client.keypair],
             blockhash,
-        );
+        )
+    }
 
+    async fn send_transaction(
+        oracle_client: &OracleClient,
+        rpc_client: &Arc<RpcClient>,
+        transaction: &Transaction,
+        attempt: u64,
+    ) -> Result<String> {
         use solana_client::rpc_config::RpcSendTransactionConfig;
         let sig = rpc_client
             .send_transaction_with_config(
-                &tx,
+                transaction,
                 RpcSendTransactionConfig {
                     skip_preflight: oracle_client.skip_preflight && attempt == 0,
                     preflight_commitment: Some(CommitmentLevel::Processed),
