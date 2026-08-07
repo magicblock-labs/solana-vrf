@@ -57,6 +57,8 @@ struct DelegationStatusResponse {
 
 const EARLY_SEND_DIVISOR: u32 = 20;
 const EARLY_SEND_MAX: Duration = Duration::from_millis(20);
+const NON_ER_EARLY_SEND_BONUS: Duration = Duration::from_millis(50);
+const NON_ER_MIN_SLOT_DURATION: Duration = Duration::from_millis(200);
 const MIN_SLOT_SAMPLE: Duration = Duration::from_millis(1);
 const MIN_SLOT_SAMPLES: u8 = 3;
 
@@ -71,6 +73,7 @@ struct SlotTiming {
     last_boundary: Option<(u64, Instant)>,
     slot_duration: Option<Duration>,
     samples: u8,
+    predictive_lead_bonus: Duration,
 }
 
 impl SlotTracker {
@@ -84,6 +87,14 @@ impl SlotTracker {
             sender,
             timing: Arc::new(Mutex::new(SlotTiming::default())),
         }
+    }
+
+    fn set_is_er(&self, is_er: bool) {
+        self.timing.lock().unwrap().predictive_lead_bonus = if is_er {
+            Duration::ZERO
+        } else {
+            NON_ER_EARLY_SEND_BONUS
+        };
     }
 
     pub fn current(&self) -> u64 {
@@ -151,7 +162,13 @@ impl SlotTracker {
         let slots = u32::try_from(target.checked_sub(slot)?).ok()?;
         let predicted = observed_at + slot_duration.checked_mul(slots)?;
         let lead = Self::early_send_lead(slot_duration);
-        Some((predicted.checked_sub(lead)?, predicted + lead))
+        let predictive_lead = lead
+            + if slot_duration >= NON_ER_MIN_SLOT_DURATION {
+                timing.predictive_lead_bonus
+            } else {
+                Duration::ZERO
+            };
+        Some((predicted.checked_sub(predictive_lead)?, predicted + lead))
     }
 
     pub fn early_send_grace(&self) -> Duration {
@@ -224,6 +241,29 @@ mod tests {
             ))
         );
         assert_eq!(tracker.early_send_grace(), Duration::from_millis(20));
+
+        tracker.set_is_er(false);
+        let (deadline, expires) = tracker.early_window(12).unwrap();
+        assert_eq!(deadline, start + Duration::from_millis(1530));
+        assert_eq!(expires, start + Duration::from_millis(1620));
+        assert_eq!(tracker.early_send_grace(), Duration::from_millis(20));
+
+        tracker.set_is_er(true);
+        assert_eq!(
+            tracker.early_window(12).unwrap().0,
+            start + Duration::from_millis(1580)
+        );
+
+        let fast_tracker = SlotTracker::new();
+        fast_tracker.set_is_er(false);
+        fast_tracker.observe_slot_at(8, start);
+        fast_tracker.observe_slot_at(9, start + Duration::from_millis(50));
+        fast_tracker.observe_slot_at(10, start + Duration::from_millis(100));
+        fast_tracker.observe_slot_at(11, start + Duration::from_millis(150));
+        assert_eq!(
+            fast_tracker.early_window(12).unwrap().0,
+            start + Duration::from_micros(197_500)
+        );
     }
 
     #[tokio::test]
@@ -451,7 +491,9 @@ impl OracleClient {
         let version = rpc_client
             .send::<Value>(RpcRequest::GetVersion, Value::Null)
             .await?;
-        if version.get("magicblock-core").is_some() {
+        let is_er = version.get("magicblock-core").is_some();
+        self.slot_tracker.set_is_er(is_er);
+        if is_er {
             *self.delegated_queue_statuses.write().await = Some(HashMap::new());
         }
         Ok(())
