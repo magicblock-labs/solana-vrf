@@ -216,13 +216,17 @@ pub async fn process_oracle_queue(
                 }
                 let mut attempts = 0;
                 let mut backoff_attempts = 0;
+                let mut first_legal_attempt_pending = false;
                 blockhash_cache.refresh_if_stale(BLOCKHASH_MAX_AGE).await;
-                let mut prepared_first = Some(
+                let prepared_vrf =
+                    ProcessableItem::prepare_vrf(&oracle_client_for_proc, &input_seed);
+                let mut prepared_transaction = Some(
                     ProcessableItem(item)
                         .prepare_transaction(
                             &oracle_client_for_proc,
                             &blockhash_cache,
                             &input_seed,
+                            &prepared_vrf,
                             &queue,
                             &oracle_queue,
                             account_bytes_task.as_slice(),
@@ -234,14 +238,22 @@ pub async fn process_oracle_queue(
                 while attempts < 100 {
                     let first_valid_slot = item.slot.saturating_add(1);
                     if oracle_client_for_proc.slot_tracker.current() < first_valid_slot {
-                        oracle_client_for_proc
-                            .slot_tracker
-                            .wait_for_slot(first_valid_slot)
-                            .await;
+                        if attempts == 0 {
+                            oracle_client_for_proc
+                                .slot_tracker
+                                .wait_for_slot_early(first_valid_slot)
+                                .await;
+                        } else {
+                            oracle_client_for_proc
+                                .slot_tracker
+                                .wait_for_slot(first_valid_slot)
+                                .await;
+                        }
                     }
                     let attempt_slot = oracle_client_for_proc.slot_tracker.current();
+                    let sent_early = attempt_slot < first_valid_slot;
                     let mut use_backoff = false;
-                    let transaction = match prepared_first.take() {
+                    let transaction = match prepared_transaction.take() {
                         Some(transaction)
                             if attempt_slot.saturating_sub(item.slot) <= QUEUE_TTL_SLOTS =>
                         {
@@ -253,6 +265,7 @@ pub async fn process_oracle_queue(
                                     &oracle_client_for_proc,
                                     &blockhash_cache,
                                     &input_seed,
+                                    &prepared_vrf,
                                     &queue,
                                     &oracle_queue,
                                     account_bytes_task.as_slice(),
@@ -264,14 +277,17 @@ pub async fn process_oracle_queue(
 
                     // Retry transient send errors on the normal backoff; deterministic
                     // callback address errors wait for expiry and purge.
-                    match ProcessableItem::send_transaction(
+                    let skip_preflight = attempts == 0 || first_legal_attempt_pending;
+                    first_legal_attempt_pending = sent_early;
+                    let result = ProcessableItem::send_transaction(
                         &oracle_client_for_proc,
                         &rpc_client,
                         &transaction,
-                        attempts,
+                        skip_preflight,
                     )
-                    .await
-                    {
+                    .await;
+                    let early_send_accepted = sent_early && result.is_ok();
+                    match result {
                         Ok(signature) => trace!(
                             "Transaction: {}, for id {}",
                             signature,
@@ -292,13 +308,7 @@ pub async fn process_oracle_queue(
                                 if code
                                     == EphemeralVrfError::OracleMustProvideInDifferentSlot as u32
                                 {
-                                    blockhash_cache.refresh_if_stale(BLOCKHASH_MAX_AGE).await;
-                                    oracle_client_for_proc
-                                        .slot_tracker
-                                        .wait_for_slot(attempt_slot.saturating_add(1))
-                                        .await;
-                                    attempts += 1;
-                                    continue;
+                                    use_backoff = false;
                                 }
                                 if code == ANCHOR_CONSTRAINT_ADDRESS_ERROR {
                                     let purge_slot =
@@ -317,6 +327,23 @@ pub async fn process_oracle_queue(
                     // Fulfillment is observed via the queue subscription: this task
                     // is aborted once the item disappears. Accepted transactions retry
                     // next slot; transient errors back off by 1, 2, 4, ... slots.
+                    let next_attempt = attempts + 1;
+                    if first_legal_attempt_pending {
+                        prepared_transaction = Some(
+                            ProcessableItem(item)
+                                .prepare_transaction(
+                                    &oracle_client_for_proc,
+                                    &blockhash_cache,
+                                    &input_seed,
+                                    &prepared_vrf,
+                                    &queue,
+                                    &oracle_queue,
+                                    account_bytes_task.as_slice(),
+                                    next_attempt,
+                                )
+                                .await,
+                        );
+                    }
                     let retry_slots = if use_backoff {
                         (1u64 << backoff_attempts.min(5)).min(32)
                     } else {
@@ -328,7 +355,11 @@ pub async fn process_oracle_queue(
                         .slot_tracker
                         .wait_for_slot(attempt_slot.saturating_add(retry_slots))
                         .await;
-                    attempts += 1;
+                    if early_send_accepted {
+                        tokio::time::sleep(oracle_client_for_proc.slot_tracker.early_send_grace())
+                            .await;
+                    }
+                    attempts = next_attempt;
                     if use_backoff {
                         backoff_attempts += 1;
                     }
@@ -368,18 +399,15 @@ pub async fn process_oracle_queue(
 #[repr(transparent)]
 pub struct ProcessableItem(pub QueueItem);
 
+struct PreparedVrf {
+    output: PodRistrettoPoint,
+    commitment_base: PodRistrettoPoint,
+    commitment_hash: PodRistrettoPoint,
+    s: PodScalar,
+}
+
 impl ProcessableItem {
-    #[allow(clippy::too_many_arguments)]
-    async fn prepare_transaction(
-        &self,
-        oracle_client: &OracleClient,
-        blockhash_cache: &BlockhashCache,
-        vrf_input: &[u8; 32],
-        queue_pubkey: &Pubkey,
-        queue_meta: &Queue,
-        account_bytes: &[u8],
-        attempt: u64,
-    ) -> Transaction {
+    fn prepare_vrf(oracle_client: &OracleClient, vrf_input: &[u8; 32]) -> PreparedVrf {
         let (output, (commitment_base, commitment_hash, s)) =
             compute_vrf(oracle_client.oracle_vrf_sk, vrf_input);
 
@@ -390,6 +418,26 @@ impl ProcessableItem {
             (commitment_base, commitment_hash, s),
         ));
 
+        PreparedVrf {
+            output: PodRistrettoPoint(output.to_bytes()),
+            commitment_base: PodRistrettoPoint(commitment_base.to_bytes()),
+            commitment_hash: PodRistrettoPoint(commitment_hash.to_bytes()),
+            s: PodScalar(s.to_bytes()),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn prepare_transaction(
+        &self,
+        oracle_client: &OracleClient,
+        blockhash_cache: &BlockhashCache,
+        vrf_input: &[u8; 32],
+        prepared_vrf: &PreparedVrf,
+        queue_pubkey: &Pubkey,
+        queue_meta: &Queue,
+        account_bytes: &[u8],
+        attempt: u64,
+    ) -> Transaction {
         let (blockhash, _) = blockhash_cache.get_blockhash_and_slot().await;
         let current_slot = oracle_client.slot_tracker.current();
 
@@ -407,10 +455,10 @@ impl ProcessableItem {
                 Pubkey::new_from_array(self.0.callback_program_id),
                 self.0.identity_mode,
                 *vrf_input,
-                PodRistrettoPoint(output.to_bytes()),
-                PodRistrettoPoint(commitment_base.to_bytes()),
-                PodRistrettoPoint(commitment_hash.to_bytes()),
-                PodScalar(s.to_bytes()),
+                prepared_vrf.output,
+                prepared_vrf.commitment_base,
+                prepared_vrf.commitment_hash,
+                prepared_vrf.s,
             );
             let metas = self.0.account_metas(&account_bytes[8..]);
             ix.accounts
@@ -441,14 +489,14 @@ impl ProcessableItem {
         oracle_client: &OracleClient,
         rpc_client: &Arc<RpcClient>,
         transaction: &Transaction,
-        attempt: u64,
+        first_legal_attempt: bool,
     ) -> Result<String> {
         use solana_client::rpc_config::RpcSendTransactionConfig;
         let sig = rpc_client
             .send_transaction_with_config(
                 transaction,
                 RpcSendTransactionConfig {
-                    skip_preflight: oracle_client.skip_preflight && attempt == 0,
+                    skip_preflight: oracle_client.skip_preflight && first_legal_attempt,
                     preflight_commitment: Some(CommitmentLevel::Processed),
                     ..Default::default()
                 },

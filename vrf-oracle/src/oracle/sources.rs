@@ -50,7 +50,7 @@ impl QueueUpdateSource for WebSocketSource {
                     return Some((pubkey, *queue, data, update.context.slot));
                 }
                 recv(self.slot_subscription) -> update => {
-                    self.slot_tracker.update(update.ok()?.slot);
+                    self.slot_tracker.observe_slot(update.ok()?.slot);
                 }
             }
         }
@@ -83,18 +83,16 @@ impl QueueUpdateSource for LaserstreamSource {
                         self.blockhash_cache.set_blockhash(hash, meta.slot).await;
                     }
                 }
-                Some(UpdateOneof::Slot(slot)) => {
-                    if matches!(
-                        SlotStatus::try_from(slot.status),
-                        Ok(SlotStatus::SlotProcessed
-                            | SlotStatus::SlotConfirmed
-                            | SlotStatus::SlotFinalized
-                            | SlotStatus::SlotCompleted
-                            | SlotStatus::SlotCreatedBank)
-                    ) {
-                        self.slot_tracker.update(slot.slot);
-                    }
-                }
+                Some(UpdateOneof::Slot(slot)) => match SlotStatus::try_from(slot.status) {
+                    Ok(SlotStatus::SlotCreatedBank) => self.slot_tracker.observe_slot(slot.slot),
+                    Ok(
+                        SlotStatus::SlotProcessed
+                        | SlotStatus::SlotConfirmed
+                        | SlotStatus::SlotFinalized
+                        | SlotStatus::SlotCompleted,
+                    ) => self.slot_tracker.update(slot.slot),
+                    _ => {}
+                },
                 _ => {}
             }
         }

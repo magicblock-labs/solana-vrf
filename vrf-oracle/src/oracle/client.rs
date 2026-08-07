@@ -10,9 +10,14 @@ use solana_client::{
 };
 use solana_commitment_config::CommitmentConfig;
 use solana_sdk::{pubkey::Pubkey, signature::Keypair};
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tokio::sync::{watch, RwLock};
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 
 use helius_laserstream::{
     grpc::{
@@ -50,15 +55,35 @@ struct DelegationStatusResponse {
     is_delegated: bool,
 }
 
+const EARLY_SEND_DIVISOR: u32 = 20;
+const EARLY_SEND_MAX: Duration = Duration::from_millis(20);
+const MIN_SLOT_SAMPLE: Duration = Duration::from_millis(1);
+const MIN_SLOT_SAMPLES: u8 = 3;
+
 #[derive(Clone)]
 pub struct SlotTracker {
     sender: watch::Sender<u64>,
+    timing: Arc<Mutex<SlotTiming>>,
+}
+
+#[derive(Default)]
+struct SlotTiming {
+    last_boundary: Option<(u64, Instant)>,
+    slot_duration: Option<Duration>,
+    samples: u8,
 }
 
 impl SlotTracker {
+    fn early_send_lead(slot_duration: Duration) -> Duration {
+        (slot_duration / EARLY_SEND_DIVISOR).min(EARLY_SEND_MAX)
+    }
+
     fn new() -> Self {
         let (sender, _) = watch::channel(0);
-        Self { sender }
+        Self {
+            sender,
+            timing: Arc::new(Mutex::new(SlotTiming::default())),
+        }
     }
 
     pub fn current(&self) -> u64 {
@@ -76,10 +101,95 @@ impl SlotTracker {
         });
     }
 
+    pub fn observe_slot(&self, slot: u64) {
+        self.observe_slot_at(slot, Instant::now());
+    }
+
+    fn observe_slot_at(&self, slot: u64, now: Instant) {
+        if slot < self.current() {
+            return;
+        }
+        let mut timing = self.timing.lock().unwrap();
+        let mut timing_changed = false;
+        if let Some((previous_slot, previous_at)) = timing.last_boundary {
+            if slot > previous_slot {
+                let slot_delta = (slot - previous_slot).min(u32::MAX as u64) as u32;
+                let sample = now.duration_since(previous_at) / slot_delta;
+                if sample >= MIN_SLOT_SAMPLE {
+                    timing.slot_duration = Some(match timing.slot_duration {
+                        Some(duration) => (duration * 3 + sample) / 4,
+                        None => sample,
+                    });
+                    timing.samples = timing.samples.saturating_add(1);
+                } else {
+                    timing.slot_duration = None;
+                    timing.samples = 0;
+                }
+                timing.last_boundary = Some((slot, now));
+                timing_changed = true;
+            }
+        } else {
+            timing.last_boundary = Some((slot, now));
+            timing_changed = true;
+        }
+        drop(timing);
+        if timing_changed {
+            self.sender
+                .send_modify(|current| *current = (*current).max(slot));
+        } else {
+            self.update(slot);
+        }
+    }
+
+    fn early_window(&self, target: u64) -> Option<(Instant, Instant)> {
+        let timing = self.timing.lock().unwrap();
+        if timing.samples < MIN_SLOT_SAMPLES {
+            return None;
+        }
+        let (slot, observed_at) = timing.last_boundary?;
+        let slot_duration = timing.slot_duration?;
+        let slots = u32::try_from(target.checked_sub(slot)?).ok()?;
+        let predicted = observed_at + slot_duration.checked_mul(slots)?;
+        let lead = Self::early_send_lead(slot_duration);
+        Some((predicted.checked_sub(lead)?, predicted + lead))
+    }
+
+    pub fn early_send_grace(&self) -> Duration {
+        let timing = self.timing.lock().unwrap();
+        timing
+            .slot_duration
+            .map(Self::early_send_lead)
+            .unwrap_or_default()
+    }
+
     pub async fn wait_for_slot(&self, target: u64) {
         let mut receiver = self.sender.subscribe();
         while *receiver.borrow_and_update() < target {
             if receiver.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
+    pub async fn wait_for_slot_early(&self, target: u64) {
+        let mut receiver = self.sender.subscribe();
+        while *receiver.borrow_and_update() < target {
+            if let Some((deadline, expires)) = self.early_window(target) {
+                if Instant::now() > expires {
+                    if receiver.changed().await.is_err() {
+                        return;
+                    }
+                    continue;
+                }
+                tokio::select! {
+                    _ = tokio::time::sleep_until(deadline) => return,
+                    result = receiver.changed() => {
+                        if result.is_err() {
+                            return;
+                        }
+                    }
+                }
+            } else if receiver.changed().await.is_err() {
                 return;
             }
         }
@@ -90,6 +200,81 @@ impl SlotTracker {
 mod tests {
     use super::SlotTracker;
     use std::time::Duration;
+    use tokio::time::Instant;
+
+    #[test]
+    fn slot_tracker_predicts_an_early_boundary() {
+        let tracker = SlotTracker::new();
+        let start = Instant::now();
+
+        tracker.observe_slot_at(8, start);
+        tracker.observe_slot_at(9, start + Duration::from_millis(400));
+        tracker.observe_slot_at(10, start + Duration::from_millis(800));
+        assert!(tracker.early_window(11).is_none());
+
+        // Account progress may arrive before the boundary notification.
+        tracker.update(11);
+        tracker.observe_slot_at(11, start + Duration::from_millis(1200));
+
+        assert_eq!(
+            tracker.early_window(12),
+            Some((
+                start + Duration::from_millis(1580),
+                start + Duration::from_millis(1620)
+            ))
+        );
+        assert_eq!(tracker.early_send_grace(), Duration::from_millis(20));
+    }
+
+    #[tokio::test]
+    async fn slot_tracker_can_wake_before_the_target_slot() {
+        let tracker = SlotTracker::new();
+        let now = Instant::now();
+        tracker.observe_slot_at(8, now - Duration::from_millis(200));
+        tracker.observe_slot_at(9, now - Duration::from_millis(150));
+        tracker.observe_slot_at(10, now - Duration::from_millis(100));
+        tracker.update(11);
+
+        let waiter = {
+            let tracker = tracker.clone();
+            tokio::spawn(async move { tracker.wait_for_slot_early(12).await })
+        };
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+
+        // The boundary observation must wake the waiter even though account
+        // progress already advanced the watched slot to the same value.
+        tracker.observe_slot_at(11, now - Duration::from_millis(50));
+
+        tokio::time::timeout(Duration::from_millis(10), waiter)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(tracker.current(), 11);
+    }
+
+    #[tokio::test]
+    async fn slot_tracker_ignores_a_stale_prediction() {
+        let tracker = SlotTracker::new();
+        let now = Instant::now();
+        tracker.observe_slot_at(8, now - Duration::from_millis(800));
+        tracker.observe_slot_at(9, now - Duration::from_millis(700));
+        tracker.observe_slot_at(10, now - Duration::from_millis(600));
+        tracker.observe_slot_at(11, now - Duration::from_millis(500));
+
+        let waiter = {
+            let tracker = tracker.clone();
+            tokio::spawn(async move { tracker.wait_for_slot_early(12).await })
+        };
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+
+        tracker.update(12);
+        tokio::time::timeout(Duration::from_millis(10), waiter)
+            .await
+            .unwrap()
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn slot_tracker_is_monotonic_and_race_free() {
