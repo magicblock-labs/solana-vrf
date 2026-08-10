@@ -4,8 +4,8 @@ use anyhow::Result;
 use ephemeral_vrf::vrf::{compute_vrf, verify_vrf};
 use ephemeral_vrf_api::{
     prelude::{
-        provide_randomness_with_identity_mode, purge_expired_requests, Queue, QueueAccount,
-        QueueItem, QUEUE_TTL_SLOTS,
+        provide_randomness_with_identity_mode, purge_expired_requests, EphemeralVrfError, Queue,
+        QueueAccount, QueueItem, QUEUE_TTL_SLOTS,
     },
     state::oracle_queue_pda,
     ID as PROGRAM_ID,
@@ -14,18 +14,26 @@ use futures_util::future::join_all;
 use futures_util::FutureExt;
 use log::{error, info, trace, warn};
 use solana_account_decoder::UiAccountEncoding;
+use solana_client::client_error::ClientError;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_client::rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig};
 use solana_client::rpc_filter::RpcFilterType;
 use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_compute_budget_interface::ComputeBudgetInstruction;
 use solana_curve25519::{ristretto::PodRistrettoPoint, scalar::PodScalar};
-use solana_sdk::{pubkey::Pubkey, signature::Signer, transaction::Transaction};
+use solana_sdk::{
+    instruction::InstructionError,
+    pubkey::Pubkey,
+    signature::Signer,
+    transaction::{Transaction, TransactionError},
+};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task;
-use tokio::time::sleep;
+
+const ANCHOR_CONSTRAINT_ADDRESS_ERROR: u32 = 2012;
+const BLOCKHASH_MAX_AGE: Duration = Duration::from_secs(3);
 
 pub async fn fetch_and_process_program_accounts(
     oracle_client: &Arc<OracleClient>,
@@ -100,7 +108,9 @@ pub async fn process_oracle_queue(
     account_bytes: Arc<Vec<u8>>,
     notification_slot: Option<u64>,
 ) {
-    if oracle_queue_pda(&oracle_client.keypair.pubkey(), oracle_queue.index).0 == *queue {
+    if oracle_queue_pda(&oracle_client.keypair.pubkey(), oracle_queue.index).0 == *queue
+        && oracle_client.should_process_queue(rpc_client, queue).await
+    {
         if oracle_queue.item_count > 0 {
             info!(
                 "Processing queue: {}, with len: {}",
@@ -190,100 +200,175 @@ pub async fn process_oracle_queue(
             let oracle_client_for_proc = Arc::clone(&oracle_client);
             let oracle_client_for_cleanup = Arc::clone(&oracle_client);
 
-            // Only spawn a task if this request is not already in-flight for this queue
-            let should_spawn = {
-                let mut inflight_all = oracle_client.inflight_requests.write().await;
-                let inflight_for_queue = inflight_all.entry(queue_key_spawn.clone()).or_default();
-                if let std::collections::hash_map::Entry::Vacant(e) =
-                    inflight_for_queue.entry(item.id)
-                {
-                    e.insert(item.slot);
-                    true
-                } else {
-                    false
-                }
-            };
-
-            if !should_spawn {
+            // Keep the inflight reservation locked through task publication so a
+            // queue-removal update cannot leave an untracked task between the maps.
+            let mut inflight_all = oracle_client.inflight_requests.write().await;
+            let inflight_for_queue = inflight_all.entry(queue_key_spawn.clone()).or_default();
+            if inflight_for_queue.contains_key(&item.id) {
                 continue;
             }
+            inflight_for_queue.insert(item.id, item.slot);
 
+            let (start_tx, start_rx) = tokio::sync::oneshot::channel();
             let handle = tokio::spawn(async move {
+                if start_rx.await.is_err() {
+                    return;
+                }
                 let mut attempts = 0;
-                let mut confirmed_success = false;
-
-                while attempts < 100 {
-                    match ProcessableItem(item)
-                        .process_item(
+                let mut backoff_attempts = 0;
+                let mut first_legal_attempt_pending = false;
+                blockhash_cache.refresh_if_stale(BLOCKHASH_MAX_AGE).await;
+                let prepared_vrf =
+                    ProcessableItem::prepare_vrf(&oracle_client_for_proc, &input_seed);
+                let mut prepared_transaction = Some(
+                    ProcessableItem(item)
+                        .prepare_transaction(
                             &oracle_client_for_proc,
-                            &rpc_client,
                             &blockhash_cache,
                             &input_seed,
+                            &prepared_vrf,
                             &queue,
                             &oracle_queue,
                             account_bytes_task.as_slice(),
+                            attempts,
                         )
-                        .await
-                    {
-                        Ok(signature) => {
-                            trace!(
-                                "Transaction: {}, for id {}",
-                                signature,
-                                Pubkey::new_from_array(item.id)
-                            );
-                            let sig = match signature.parse::<solana_sdk::signature::Signature>() {
-                                Ok(sig) => sig,
-                                Err(_) => {
+                        .await,
+                );
+
+                while attempts < 100 {
+                    let first_valid_slot = item.slot.saturating_add(1);
+                    if oracle_client_for_proc.slot_tracker.current() < first_valid_slot {
+                        if attempts == 0 {
+                            oracle_client_for_proc
+                                .slot_tracker
+                                .wait_for_slot_early(first_valid_slot)
+                                .await;
+                        } else {
+                            oracle_client_for_proc
+                                .slot_tracker
+                                .wait_for_slot(first_valid_slot)
+                                .await;
+                        }
+                    }
+                    let attempt_slot = oracle_client_for_proc.slot_tracker.current();
+                    let sent_early = attempt_slot < first_valid_slot;
+                    let mut use_backoff = false;
+                    let transaction = match prepared_transaction.take() {
+                        Some(transaction)
+                            if attempt_slot.saturating_sub(item.slot) <= QUEUE_TTL_SLOTS =>
+                        {
+                            transaction
+                        }
+                        _ => {
+                            ProcessableItem(item)
+                                .prepare_transaction(
+                                    &oracle_client_for_proc,
+                                    &blockhash_cache,
+                                    &input_seed,
+                                    &prepared_vrf,
+                                    &queue,
+                                    &oracle_queue,
+                                    account_bytes_task.as_slice(),
+                                    attempts,
+                                )
+                                .await
+                        }
+                    };
+
+                    // Retry transient send errors on the normal backoff; deterministic
+                    // callback address errors wait for expiry and purge.
+                    let skip_preflight = attempts == 0 || first_legal_attempt_pending;
+                    first_legal_attempt_pending = sent_early;
+                    let result = ProcessableItem::send_transaction(
+                        &oracle_client_for_proc,
+                        &rpc_client,
+                        &transaction,
+                        skip_preflight,
+                    )
+                    .await;
+                    let early_send_accepted = sent_early && result.is_ok();
+                    match result {
+                        Ok(signature) => trace!(
+                            "Transaction: {}, for id {}",
+                            signature,
+                            Pubkey::new_from_array(item.id)
+                        ),
+                        Err(error) => {
+                            use_backoff = true;
+                            if let Some(TransactionError::InstructionError(
+                                1,
+                                InstructionError::Custom(code),
+                            )) = error
+                                .downcast_ref::<ClientError>()
+                                .and_then(ClientError::get_transaction_error)
+                            {
+                                if code == EphemeralVrfError::RandomnessRequestNotFound as u32 {
+                                    break;
+                                }
+                                if code
+                                    == EphemeralVrfError::OracleMustProvideInDifferentSlot as u32
+                                {
+                                    use_backoff = false;
+                                }
+                                if code == ANCHOR_CONSTRAINT_ADDRESS_ERROR {
+                                    let purge_slot =
+                                        item.slot.saturating_add(QUEUE_TTL_SLOTS).saturating_add(1);
+                                    oracle_client_for_proc
+                                        .slot_tracker
+                                        .wait_for_slot(purge_slot)
+                                        .await;
+                                    blockhash_cache.refresh_if_stale(BLOCKHASH_MAX_AGE).await;
                                     continue;
                                 }
-                            };
+                            }
+                        }
+                    }
 
-                            let result = rpc_client
-                                .confirm_transaction_with_commitment(
-                                    &sig,
-                                    CommitmentConfig::processed(),
+                    // Fulfillment is observed via the queue subscription: this task
+                    // is aborted once the item disappears. Accepted transactions retry
+                    // next slot; transient errors back off by 1, 2, 4, ... slots.
+                    let next_attempt = attempts + 1;
+                    if first_legal_attempt_pending {
+                        prepared_transaction = Some(
+                            ProcessableItem(item)
+                                .prepare_transaction(
+                                    &oracle_client_for_proc,
+                                    &blockhash_cache,
+                                    &input_seed,
+                                    &prepared_vrf,
+                                    &queue,
+                                    &oracle_queue,
+                                    account_bytes_task.as_slice(),
+                                    next_attempt,
                                 )
-                                .await;
-
-                            match result {
-                                Ok(success) => {
-                                    if success.value {
-                                        info!(
-                                            "Transaction successfully confirmed: {}, for id: {}",
-                                            signature,
-                                            Pubkey::new_from_array(item.id)
-                                        );
-                                        confirmed_success = true;
-                                        break;
-                                    } else {
-                                        attempts += 1;
-                                        blockhash_cache.refresh_blockhash().await;
-                                        if attempts > 20 {
-                                            let delay_ms = 10 * (attempts - 20);
-                                            sleep(Duration::from_millis(delay_ms)).await;
-                                        }
-                                    }
-                                }
-                                Err(err) => {
-                                    warn!("Transaction {sig} failed to confirm: {err}");
-                                    attempts += 3;
-                                    blockhash_cache.refresh_blockhash().await;
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            // Response may be in the same slot, we retry with linear backoff
-                            blockhash_cache.refresh_blockhash().await;
-                            if attempts > 5 {
-                                let delay_ms = 20 * (attempts - 5);
-                                sleep(Duration::from_millis(delay_ms)).await;
-                            }
-                            attempts += 1;
-                        }
+                                .await,
+                        );
+                    }
+                    let retry_slots = if use_backoff {
+                        (1u64 << backoff_attempts.min(5)).min(32)
+                    } else {
+                        backoff_attempts = 0;
+                        1
+                    };
+                    blockhash_cache.refresh_if_stale(BLOCKHASH_MAX_AGE).await;
+                    oracle_client_for_proc
+                        .slot_tracker
+                        .wait_for_slot(attempt_slot.saturating_add(retry_slots))
+                        .await;
+                    if early_send_accepted {
+                        tokio::time::sleep(oracle_client_for_proc.slot_tracker.early_send_grace())
+                            .await;
+                    }
+                    attempts = next_attempt;
+                    if use_backoff {
+                        backoff_attempts += 1;
                     }
                 }
 
-                // Task finished. Remove from active_tasks. If not confirmed, also clear inflight to allow retry.
+                // Task stopped or attempts exhausted. Remove from active_tasks and
+                // clear inflight so a later queue snapshot can retry it if needed.
+                // (Successful items never reach here: their tasks are aborted by the
+                // queue-diff path, which also cleans both maps.)
                 {
                     let mut tasks_all = oracle_client_for_cleanup.active_tasks.write().await;
                     if let Some(tasks_for_queue) = tasks_all.get_mut(&queue_key_spawn) {
@@ -291,7 +376,7 @@ pub async fn process_oracle_queue(
                     }
                 }
 
-                if !confirmed_success {
+                {
                     let mut inflight_all =
                         oracle_client_for_cleanup.inflight_requests.write().await;
                     if let Some(inflight_for_queue) = inflight_all.get_mut(&queue_key_spawn) {
@@ -300,12 +385,13 @@ pub async fn process_oracle_queue(
                 }
             });
 
-            // Track the task handle for potential cancellation if the item disappears from the queue
             {
                 let mut tasks_all = oracle_client.active_tasks.write().await;
                 let tasks_for_queue = tasks_all.entry(queue_key.clone()).or_default();
                 tasks_for_queue.insert(item.id, handle);
             }
+            drop(inflight_all);
+            let _ = start_tx.send(());
         }
     }
 }
@@ -313,18 +399,15 @@ pub async fn process_oracle_queue(
 #[repr(transparent)]
 pub struct ProcessableItem(pub QueueItem);
 
+struct PreparedVrf {
+    output: PodRistrettoPoint,
+    commitment_base: PodRistrettoPoint,
+    commitment_hash: PodRistrettoPoint,
+    s: PodScalar,
+}
+
 impl ProcessableItem {
-    #[allow(clippy::too_many_arguments)]
-    pub async fn process_item(
-        &self,
-        oracle_client: &OracleClient,
-        rpc_client: &Arc<RpcClient>,
-        blockhash_cache: &BlockhashCache,
-        vrf_input: &[u8; 32],
-        queue_pubkey: &Pubkey,
-        queue_meta: &Queue,
-        account_bytes: &[u8],
-    ) -> Result<String> {
+    fn prepare_vrf(oracle_client: &OracleClient, vrf_input: &[u8; 32]) -> PreparedVrf {
         let (output, (commitment_base, commitment_hash, s)) =
             compute_vrf(oracle_client.oracle_vrf_sk, vrf_input);
 
@@ -335,7 +418,28 @@ impl ProcessableItem {
             (commitment_base, commitment_hash, s),
         ));
 
-        let (blockhash, current_slot) = blockhash_cache.get_blockhash_and_slot().await;
+        PreparedVrf {
+            output: PodRistrettoPoint(output.to_bytes()),
+            commitment_base: PodRistrettoPoint(commitment_base.to_bytes()),
+            commitment_hash: PodRistrettoPoint(commitment_hash.to_bytes()),
+            s: PodScalar(s.to_bytes()),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn prepare_transaction(
+        &self,
+        oracle_client: &OracleClient,
+        blockhash_cache: &BlockhashCache,
+        vrf_input: &[u8; 32],
+        prepared_vrf: &PreparedVrf,
+        queue_pubkey: &Pubkey,
+        queue_meta: &Queue,
+        account_bytes: &[u8],
+        attempt: u64,
+    ) -> Transaction {
+        let (blockhash, _) = blockhash_cache.get_blockhash_and_slot().await;
+        let current_slot = oracle_client.slot_tracker.current();
 
         // Check whether the request is expired
         let age = current_slot.saturating_sub(self.0.slot);
@@ -351,10 +455,10 @@ impl ProcessableItem {
                 Pubkey::new_from_array(self.0.callback_program_id),
                 self.0.identity_mode,
                 *vrf_input,
-                PodRistrettoPoint(output.to_bytes()),
-                PodRistrettoPoint(commitment_base.to_bytes()),
-                PodRistrettoPoint(commitment_hash.to_bytes()),
-                PodScalar(s.to_bytes()),
+                prepared_vrf.output,
+                prepared_vrf.commitment_base,
+                prepared_vrf.commitment_hash,
+                prepared_vrf.s,
             );
             let metas = self.0.account_metas(&account_bytes[8..]);
             ix.accounts
@@ -370,19 +474,29 @@ impl ProcessableItem {
                 _ => 300_000,
             }
         };
-        let tx = Transaction::new_signed_with_payer(
+        // Nonce: vary the compute limit so each retry is a distinct
+        // transaction under the same cached blockhash.
+        let budget = budget + (attempt % 256) as u32;
+        Transaction::new_signed_with_payer(
             &[ComputeBudgetInstruction::set_compute_unit_limit(budget), ix],
             Some(&oracle_client.keypair.pubkey()),
             &[&oracle_client.keypair],
             blockhash,
-        );
+        )
+    }
 
+    async fn send_transaction(
+        oracle_client: &OracleClient,
+        rpc_client: &Arc<RpcClient>,
+        transaction: &Transaction,
+        first_legal_attempt: bool,
+    ) -> Result<String> {
         use solana_client::rpc_config::RpcSendTransactionConfig;
         let sig = rpc_client
             .send_transaction_with_config(
-                &tx,
+                transaction,
                 RpcSendTransactionConfig {
-                    skip_preflight: oracle_client.skip_preflight,
+                    skip_preflight: oracle_client.skip_preflight && first_legal_attempt,
                     preflight_commitment: Some(CommitmentLevel::Processed),
                     ..Default::default()
                 },
