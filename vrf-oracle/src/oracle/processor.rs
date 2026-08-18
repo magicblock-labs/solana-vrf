@@ -34,6 +34,7 @@ use tokio::task;
 
 const ANCHOR_CONSTRAINT_ADDRESS_ERROR: u32 = 2012;
 const BLOCKHASH_MAX_AGE: Duration = Duration::from_secs(3);
+const MAX_PRIORITY_FEE_MICRO_LAMPORTS: u64 = 200_000;
 
 pub async fn fetch_and_process_program_accounts(
     oracle_client: &Arc<OracleClient>,
@@ -224,6 +225,7 @@ pub async fn process_oracle_queue(
                     ProcessableItem(item)
                         .prepare_transaction(
                             &oracle_client_for_proc,
+                            &rpc_client,
                             &blockhash_cache,
                             &input_seed,
                             &prepared_vrf,
@@ -263,6 +265,7 @@ pub async fn process_oracle_queue(
                             ProcessableItem(item)
                                 .prepare_transaction(
                                     &oracle_client_for_proc,
+                                    &rpc_client,
                                     &blockhash_cache,
                                     &input_seed,
                                     &prepared_vrf,
@@ -333,6 +336,7 @@ pub async fn process_oracle_queue(
                             ProcessableItem(item)
                                 .prepare_transaction(
                                     &oracle_client_for_proc,
+                                    &rpc_client,
                                     &blockhash_cache,
                                     &input_seed,
                                     &prepared_vrf,
@@ -430,6 +434,7 @@ impl ProcessableItem {
     async fn prepare_transaction(
         &self,
         oracle_client: &OracleClient,
+        rpc_client: &RpcClient,
         blockhash_cache: &BlockhashCache,
         vrf_input: &[u8; 32],
         prepared_vrf: &PreparedVrf,
@@ -477,8 +482,20 @@ impl ProcessableItem {
         // Nonce: vary the compute limit so each retry is a distinct
         // transaction under the same cached blockhash.
         let budget = budget + (attempt % 256) as u32;
+        // Escalate the fee roughly every 3s the request stays unlanded; the
+        // cap bounds the spend to ~60k lamports at the 300k CU limit.
+        let priority_fee = (oracle_client.priority_fee(rpc_client).await << (attempt / 8).min(4))
+            .min(MAX_PRIORITY_FEE_MICRO_LAMPORTS);
+        let mut instructions = vec![ComputeBudgetInstruction::set_compute_unit_limit(budget), ix];
+        if priority_fee > 0 {
+            // Appended after the VRF instruction so its error index stays 1,
+            // which the send loop's error matching relies on.
+            instructions.push(ComputeBudgetInstruction::set_compute_unit_price(
+                priority_fee,
+            ));
+        }
         Transaction::new_signed_with_payer(
-            &[ComputeBudgetInstruction::set_compute_unit_limit(budget), ix],
+            &instructions,
             Some(&oracle_client.keypair.pubkey()),
             &[&oracle_client.keypair],
             blockhash,

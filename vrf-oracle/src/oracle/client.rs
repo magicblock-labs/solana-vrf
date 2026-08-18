@@ -55,6 +55,8 @@ struct DelegationStatusResponse {
     is_delegated: bool,
 }
 
+const PRIORITY_FEE_MAX_AGE: Duration = Duration::from_secs(10);
+const DEFAULT_PRIORITY_FEE_MICRO_LAMPORTS: u64 = 10_000;
 const EARLY_SEND_DIVISOR: u32 = 20;
 const EARLY_SEND_MAX: Duration = Duration::from_millis(20);
 const NON_ER_EARLY_SEND_BONUS: Duration = Duration::from_millis(400);
@@ -234,6 +236,7 @@ pub struct OracleClient {
     pub skip_preflight: bool,
     pub slot_tracker: SlotTracker,
     delegated_queue_statuses: Arc<RwLock<Option<HashMap<Pubkey, bool>>>>,
+    priority_fee_cache: Arc<RwLock<Option<(u64, Instant)>>>,
 }
 
 #[async_trait]
@@ -268,7 +271,47 @@ impl OracleClient {
             skip_preflight,
             slot_tracker: SlotTracker::new(),
             delegated_queue_statuses: Arc::new(RwLock::new(None)),
+            priority_fee_cache: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Recommended priority fee in micro-lamports per CU, cached for
+    /// PRIORITY_FEE_MAX_AGE. Zero on ephemeral rollups; falls back to the
+    /// default when the endpoint does not support getPriorityFeeEstimate.
+    pub async fn priority_fee(&self, rpc_client: &RpcClient) -> u64 {
+        if self.delegated_queue_statuses.read().await.is_some() {
+            return 0;
+        }
+        if let Some((fee, fetched_at)) = *self.priority_fee_cache.read().await {
+            if fetched_at.elapsed() < PRIORITY_FEE_MAX_AGE {
+                return fee;
+            }
+        }
+        let fee = Self::fetch_priority_fee(rpc_client)
+            .await
+            .unwrap_or(DEFAULT_PRIORITY_FEE_MICRO_LAMPORTS);
+        *self.priority_fee_cache.write().await = Some((fee, Instant::now()));
+        fee
+    }
+
+    async fn fetch_priority_fee(rpc_client: &RpcClient) -> Result<u64, ClientError> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct PriorityFeeEstimate {
+            priority_fee_estimate: f64,
+        }
+        rpc_client
+            .send::<PriorityFeeEstimate>(
+                RpcRequest::Custom {
+                    method: "getPriorityFeeEstimate",
+                },
+                json!([{
+                    "accountKeys": [PROGRAM_ID.to_string()],
+                    "options": { "recommended": true }
+                }]),
+            )
+            .await
+            .map(|estimate| estimate.priority_fee_estimate as u64)
     }
 
     pub async fn run(self: Arc<Self>) -> Result<()> {
@@ -292,13 +335,13 @@ impl OracleClient {
         )
         .await?;
 
-        // Periodically refresh and process program accounts every 30 seconds
+        // Periodically refresh and process program accounts every 5 seconds
         {
             let self_clone = Arc::clone(&self);
             let rpc_client_clone = Arc::clone(&rpc_client);
             let blockhash_cache_clone = Arc::clone(&blockhash_cache);
             tokio::spawn(async move {
-                let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
                 interval.tick().await;
                 loop {
                     interval.tick().await;
@@ -320,6 +363,18 @@ impl OracleClient {
             match self.create_update_source(&blockhash_cache).await {
                 Ok(mut source) => {
                     info!("Update source connected successfully");
+                    // Requests that landed while the source was down produce no
+                    // account notification: snapshot on every (re)connect.
+                    if let Err(err) = fetch_and_process_program_accounts(
+                        &self,
+                        &rpc_client,
+                        &blockhash_cache,
+                        queue_memcmp_filter(),
+                    )
+                    .await
+                    {
+                        error!("Post-connect fetch_and_process_program_accounts failed: {err:?}");
+                    }
                     while let Some((pubkey, queue, bytes, notification_slot)) = source.next().await
                     {
                         let bytes = Arc::new(bytes);
