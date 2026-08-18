@@ -31,6 +31,8 @@ pub enum EphemeralVrfError {
     InvalidOracleIdentity = 12,
     #[error("Oracle must fulfill in a different slot than the request slot")]
     OracleMustProvideInDifferentSlot = 13,
+    #[error("Queue account size exceeds the maximum allowed")]
+    QueueSizeTooLarge = 14,
 }
 
 impl From<EphemeralVrfError> for ProgramError {

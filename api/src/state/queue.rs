@@ -808,7 +808,10 @@ mod tests {
             .unwrap();
         assert_eq!(reused_index, 1);
         assert_eq!(queue.len(), 4);
-        assert_eq!(queue.header.cursor as usize, QueueAccount::items_start() + span * 4);
+        assert_eq!(
+            queue.header.cursor as usize,
+            QueueAccount::items_start() + span * 4
+        );
 
         // Appending past the survivors extends from the trimmed cursor.
         let tail_index = queue
