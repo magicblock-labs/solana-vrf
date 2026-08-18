@@ -7,13 +7,13 @@ MariaDB Corporation Ab.
 
 Licensor: MagicBlock Labs Pte. Ltd.
 
-Licensed Work: MagicBlock Validator
+Licensed Work: MagicBlock Labs’ Solana Verifiable Random Function (VRF)
 
 The Licensed Work is (c) 2024 MagicBlock Labs Pte. Ltd.
 
 Additional Use Grant: None
 
-Change Date: Dec 1, 2027
+Change Date: Dec 1, 2029
 
 Change License: MIT
 

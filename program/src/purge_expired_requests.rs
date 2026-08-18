@@ -36,34 +36,24 @@ pub fn process_purge_expired_requests(accounts: &[AccountInfo<'_>], data: &[u8])
     let queue_data = &mut acc_data[8..];
     let mut queue_acc = QueueAccount::load(queue_data)?;
 
-    // Scan and remove expired items by logical index
+    // Scan and remove expired items in a single O(n) pass, so purging stays
+    // within the compute budget even when the queue is completely full.
     let mut total_cost: u64 = 0;
-    let mut i: usize = 0;
+    let mut removed: usize = 0;
     msg!("Items in the queue: {}", queue_acc.len());
-    while i < queue_acc.len() {
-        // Safe to unwrap: index < len()
-        let item = queue_acc
-            .get_item_by_index(i)
-            .ok_or(ProgramError::InvalidAccountData)?;
-        let age = current_slot.saturating_sub(item.slot);
-        if age > QUEUE_TTL_SLOTS {
+    queue_acc.remove_items_matching(
+        |item| current_slot.saturating_sub(item.slot) > QUEUE_TTL_SLOTS,
+        |item| {
             let cost = if item.priority_request == 1 {
                 VRF_HIGH_PRIORITY_LAMPORTS_COST
             } else {
                 VRF_LAMPORTS_COST
             };
             total_cost = total_cost.saturating_add(cost);
-            let _ = queue_acc.remove_item(i)?;
-            msg!(
-                "Removing item {} from queue, new size {}",
-                i,
-                queue_acc.len()
-            );
-            // do not increment i; next item shifts into this index
-        } else {
-            i += 1;
-        }
-    }
+            removed += 1;
+        },
+    );
+    msg!("Removed {} expired items from the queue", removed);
 
     // Send the fees to the oracle.
     // The oracle also accrue fees on malformed/expired requests to
