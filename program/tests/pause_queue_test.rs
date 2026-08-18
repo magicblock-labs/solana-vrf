@@ -18,7 +18,10 @@ fn empty_queue(size: usize) -> Vec<u8> {
     data
 }
 
-async fn paused_flag(banks: &solana_program_test::BanksClient, queue: solana_program::pubkey::Pubkey) -> u8 {
+async fn paused_flag(
+    banks: &solana_program_test::BanksClient,
+    queue: solana_program::pubkey::Pubkey,
+) -> u8 {
     let acct = banks.get_account(queue).await.unwrap().unwrap();
     Queue::try_from_bytes(&acct.data).unwrap().paused
 }
