@@ -42,19 +42,22 @@ pub async fn fetch_and_process_program_accounts(
     blockhash_cache: &Arc<BlockhashCache>,
     filters: Vec<RpcFilterType>,
 ) -> Result<()> {
+    // min_context_slot binds the scan to this view, so absences in the
+    // result are meaningful for items enqueued strictly before it. Minus
+    // one because the tracker may already know a just-created bank the
+    // RPC node has not finished processing.
+    let view_slot = oracle_client.slot_tracker.current().saturating_sub(1);
     let config = RpcProgramAccountsConfig {
         account_config: RpcAccountInfoConfig {
             commitment: Some(CommitmentConfig::processed()),
             encoding: Some(UiAccountEncoding::Base64),
+            min_context_slot: Some(view_slot),
             ..Default::default()
         },
         filters: Some(filters),
         ..Default::default()
     };
 
-    // Conservative view slot for the snapshot; absences in an older view
-    // must not cancel tasks for requests enqueued after it.
-    let view_slot = oracle_client.slot_tracker.current();
     let accounts = rpc_client
         .get_program_accounts_with_config(&PROGRAM_ID, config)
         .await?;

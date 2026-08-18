@@ -346,16 +346,23 @@ impl OracleClient {
         )
         .await?;
 
+        // Serialize full-program scans: the periodic and reconnect paths
+        // share one flight so a slow RPC cannot accumulate overlapping scans.
+        let scan_lock = Arc::new(tokio::sync::Mutex::new(()));
+
         // Periodically refresh and process program accounts every 5 seconds
         {
             let self_clone = Arc::clone(&self);
             let rpc_client_clone = Arc::clone(&rpc_client);
             let blockhash_cache_clone = Arc::clone(&blockhash_cache);
+            let scan_lock_clone = Arc::clone(&scan_lock);
             tokio::spawn(async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 interval.tick().await;
                 loop {
                     interval.tick().await;
+                    let _scan_guard = scan_lock_clone.lock().await;
                     if let Err(err) = fetch_and_process_program_accounts(
                         &self_clone,
                         &rpc_client_clone,
@@ -377,11 +384,14 @@ impl OracleClient {
                     // Requests that landed while the source was down produce no
                     // account notification: snapshot on every (re)connect,
                     // spawned so a slow scan cannot stall stream consumption.
-                    {
+                    // A scan already in flight is left to finish; the periodic
+                    // pass covers anything it predates.
+                    if let Ok(scan_guard) = Arc::clone(&scan_lock).try_lock_owned() {
                         let self_clone = Arc::clone(&self);
                         let rpc_client_clone = Arc::clone(&rpc_client);
                         let blockhash_cache_clone = Arc::clone(&blockhash_cache);
                         tokio::spawn(async move {
+                            let _scan_guard = scan_guard;
                             if let Err(err) = fetch_and_process_program_accounts(
                                 &self_clone,
                                 &rpc_client_clone,
