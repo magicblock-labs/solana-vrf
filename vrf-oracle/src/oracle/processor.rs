@@ -34,7 +34,7 @@ use tokio::task;
 
 const ANCHOR_CONSTRAINT_ADDRESS_ERROR: u32 = 2012;
 const BLOCKHASH_MAX_AGE: Duration = Duration::from_secs(3);
-const MAX_PRIORITY_FEE_MICRO_LAMPORTS: u64 = 200_000;
+const MAX_PRIORITY_FEE_LAMPORTS: u64 = 60_000;
 
 pub async fn fetch_and_process_program_accounts(
     oracle_client: &Arc<OracleClient>,
@@ -483,9 +483,10 @@ impl ProcessableItem {
         // transaction under the same cached blockhash.
         let budget = budget + (attempt % 256) as u32;
         // Escalate the fee roughly every 3s the request stays unlanded; the
-        // cap bounds the spend to ~60k lamports at the 300k CU limit.
-        let priority_fee = (oracle_client.priority_fee(rpc_client).await << (attempt / 8).min(4))
-            .min(MAX_PRIORITY_FEE_MICRO_LAMPORTS);
+        // cap bounds the total priority spend per attempt for any CU limit.
+        let max_price = MAX_PRIORITY_FEE_LAMPORTS.saturating_mul(1_000_000) / u64::from(budget);
+        let priority_fee =
+            (oracle_client.priority_fee(rpc_client).await << (attempt / 8).min(4)).min(max_price);
         let mut instructions = vec![ComputeBudgetInstruction::set_compute_unit_limit(budget), ix];
         if priority_fee > 0 {
             // Appended after the VRF instruction so its error index stays 1,

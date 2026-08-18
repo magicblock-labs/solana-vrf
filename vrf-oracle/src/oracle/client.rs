@@ -237,6 +237,7 @@ pub struct OracleClient {
     pub slot_tracker: SlotTracker,
     delegated_queue_statuses: Arc<RwLock<Option<HashMap<Pubkey, bool>>>>,
     priority_fee_cache: Arc<RwLock<Option<(u64, Instant)>>>,
+    priority_fee_refresh: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[async_trait]
@@ -272,6 +273,7 @@ impl OracleClient {
             slot_tracker: SlotTracker::new(),
             delegated_queue_statuses: Arc::new(RwLock::new(None)),
             priority_fee_cache: Arc::new(RwLock::new(None)),
+            priority_fee_refresh: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -282,16 +284,25 @@ impl OracleClient {
         if self.delegated_queue_statuses.read().await.is_some() {
             return 0;
         }
-        if let Some((fee, fetched_at)) = *self.priority_fee_cache.read().await {
-            if fetched_at.elapsed() < PRIORITY_FEE_MAX_AGE {
-                return fee;
-            }
+        if let Some(fee) = self.cached_priority_fee().await {
+            return fee;
+        }
+        // Serialize refreshes so concurrent tasks share one estimate.
+        let _refresh_guard = self.priority_fee_refresh.lock().await;
+        if let Some(fee) = self.cached_priority_fee().await {
+            return fee;
         }
         let fee = Self::fetch_priority_fee(rpc_client)
             .await
             .unwrap_or(DEFAULT_PRIORITY_FEE_MICRO_LAMPORTS);
         *self.priority_fee_cache.write().await = Some((fee, Instant::now()));
         fee
+    }
+
+    async fn cached_priority_fee(&self) -> Option<u64> {
+        (*self.priority_fee_cache.read().await)
+            .filter(|(_, fetched_at)| fetched_at.elapsed() < PRIORITY_FEE_MAX_AGE)
+            .map(|(fee, _)| fee)
     }
 
     async fn fetch_priority_fee(rpc_client: &RpcClient) -> Result<u64, ClientError> {
@@ -364,16 +375,26 @@ impl OracleClient {
                 Ok(mut source) => {
                     info!("Update source connected successfully");
                     // Requests that landed while the source was down produce no
-                    // account notification: snapshot on every (re)connect.
-                    if let Err(err) = fetch_and_process_program_accounts(
-                        &self,
-                        &rpc_client,
-                        &blockhash_cache,
-                        queue_memcmp_filter(),
-                    )
-                    .await
+                    // account notification: snapshot on every (re)connect,
+                    // spawned so a slow scan cannot stall stream consumption.
                     {
-                        error!("Post-connect fetch_and_process_program_accounts failed: {err:?}");
+                        let self_clone = Arc::clone(&self);
+                        let rpc_client_clone = Arc::clone(&rpc_client);
+                        let blockhash_cache_clone = Arc::clone(&blockhash_cache);
+                        tokio::spawn(async move {
+                            if let Err(err) = fetch_and_process_program_accounts(
+                                &self_clone,
+                                &rpc_client_clone,
+                                &blockhash_cache_clone,
+                                queue_memcmp_filter(),
+                            )
+                            .await
+                            {
+                                error!(
+                                    "Post-connect fetch_and_process_program_accounts failed: {err:?}"
+                                );
+                            }
+                        });
                     }
                     while let Some((pubkey, queue, bytes, notification_slot)) = source.next().await
                     {
