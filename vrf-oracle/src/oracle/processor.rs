@@ -52,6 +52,9 @@ pub async fn fetch_and_process_program_accounts(
         ..Default::default()
     };
 
+    // Conservative view slot for the snapshot; absences in an older view
+    // must not cancel tasks for requests enqueued after it.
+    let view_slot = oracle_client.slot_tracker.current();
     let accounts = rpc_client
         .get_program_accounts_with_config(&PROGRAM_ID, config)
         .await?;
@@ -83,7 +86,7 @@ pub async fn fetch_and_process_program_accounts(
                     &pubkey,
                     queue,
                     Arc::clone(&bytes),
-                    None,
+                    Some(view_slot),
                 )
                 .await
             })
@@ -156,6 +159,17 @@ pub async fn process_oracle_queue(
             let previously_tracked: Vec<[u8; 32]> = inflight_for_queue.keys().cloned().collect();
             for tracked_id in previously_tracked {
                 if !current_ids.contains(&tracked_id) {
+                    // Removal happens strictly after enqueue, so an absence
+                    // from a view no newer than the enqueue slot predates the
+                    // request: skip it so a stale snapshot cannot cancel a
+                    // live fulfillment task.
+                    if let (Some(enqueue_slot), Some(view_slot)) =
+                        (inflight_for_queue.get(&tracked_id), notification_slot)
+                    {
+                        if view_slot <= *enqueue_slot {
+                            continue;
+                        }
+                    }
                     // Cancel any running task for this id
                     if let Some(handle) = tasks_for_queue.remove(&tracked_id) {
                         handle.abort();
