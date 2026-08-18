@@ -18,7 +18,11 @@ pub struct Queue {
     pub cursor: u32,
     /// Logical index or shard id of the queue.
     pub index: u8,
-    pub _padding: [u8; 3],
+    /// 1 = paused: the oracle has stopped accepting new requests so the queue
+    /// can be drained and closed. 0 = active. Reuses former padding, so
+    /// existing (zeroed) accounts read as active.
+    pub paused: u8,
+    pub _padding: [u8; 2],
 }
 
 /// Single queue entry. This is written into the variable region and

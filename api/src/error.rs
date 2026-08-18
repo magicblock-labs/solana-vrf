@@ -31,6 +31,8 @@ pub enum EphemeralVrfError {
     InvalidOracleIdentity = 12,
     #[error("Oracle must fulfill in a different slot than the request slot")]
     OracleMustProvideInDifferentSlot = 13,
+    #[error("Queue is paused and not accepting new requests")]
+    QueuePaused = 14,
 }
 
 impl From<EphemeralVrfError> for ProgramError {

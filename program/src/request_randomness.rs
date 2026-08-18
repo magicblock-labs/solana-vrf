@@ -86,6 +86,11 @@ pub fn process_request_randomness(
         let queue_data = &mut data[8..];
         let mut queue_acc = QueueAccount::load(queue_data)?;
 
+        // Reject new requests on a paused queue so the oracle can drain and close it.
+        if queue_acc.header.paused != 0 {
+            return Err(ProgramError::from(EphemeralVrfError::QueuePaused));
+        }
+
         // Optionally validate discriminator length to 8 bytes max (borsh Vec allows larger, but callbacks typically use 8)
         if args.callback_discriminator.len() > 8 {
             return Err(ProgramError::from(EphemeralVrfError::ArgumentSizeTooLarge));

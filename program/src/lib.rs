@@ -9,6 +9,7 @@ mod process_undelegation;
 mod provide_randomness;
 mod purge_expired_requests;
 mod request_randomness;
+mod set_queue_paused;
 mod undelegate_oracle_queue;
 
 use close_oracle_queue::*;
@@ -20,6 +21,7 @@ use process_undelegation::*;
 use provide_randomness::*;
 use purge_expired_requests::*;
 use request_randomness::*;
+use set_queue_paused::*;
 use undelegate_oracle_queue::*;
 
 use ephemeral_vrf_api::prelude::*;
@@ -76,6 +78,7 @@ pub fn process_instruction(
         EphemeralVrfInstruction::PurgeExpiredRequests => {
             process_purge_expired_requests(accounts, data)?
         }
+        EphemeralVrfInstruction::SetQueuePaused => process_set_queue_paused(accounts, data)?,
     }
 
     Ok(())
