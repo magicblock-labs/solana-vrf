@@ -267,7 +267,7 @@ async fn purge_mixed_queue_keeps_live_requests() {
     assert_eq!(queue.len(), live_count + 1);
 }
 
-/// Worst case under the size cap: a max-size (1 MiB) queue completely full
+/// Worst case under the size cap: a max-size (512 KiB) queue completely full
 /// of expired minimal requests must still be purgeable in one transaction.
 #[tokio::test]
 async fn purge_max_size_queue_within_mainnet_compute_budget() {

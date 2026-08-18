@@ -12,7 +12,7 @@ const MAX_EXTRA_BYTES: usize = 10_240;
 /// being larger than 10_240 bytes.
 ///
 /// The queue uses zero-copy serialization and can be as big as
-/// `MAX_QUEUE_ACCOUNT_SIZE` (1 MiB).
+/// `MAX_QUEUE_ACCOUNT_SIZE` (512 KiB).
 ///
 ///
 /// Accounts:

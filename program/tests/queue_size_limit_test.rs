@@ -1,4 +1,4 @@
-//! Live test for the 1 MiB queue size cap (MAX_QUEUE_ACCOUNT_SIZE).
+//! Live test for the 512 KiB queue size cap (MAX_QUEUE_ACCOUNT_SIZE).
 //!
 //! Runs the real `initialize_oracle_queue` instruction: an over-limit
 //! `target_size` must be rejected with `QueueSizeTooLarge`, while a valid

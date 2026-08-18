@@ -23,10 +23,10 @@ pub const VRF_LAMPORTS_COST: u64 = 500000;
 // ~2 minutes on Solana (~500ms/slot) ≈ 240 slots. Round to 240.
 pub const QUEUE_TTL_SLOTS: u64 = 240;
 
-/// Hard cap on the oracle queue account size (1 MiB). Keeps every O(n)
-/// queue operation — above all the single-pass purge — at a small fraction
-/// of the 1.4M CU per-transaction budget, structurally.
-pub const MAX_QUEUE_ACCOUNT_SIZE: u32 = 1024 * 1024;
+/// Hard cap on the oracle queue account size (512 KiB). Keeps every O(n)
+/// queue operation — including the multi-scan request and fulfillment paths —
+/// within the 1.4M CU per-transaction budget, structurally.
+pub const MAX_QUEUE_ACCOUNT_SIZE: u32 = 512 * 1024;
 
 pub const RISTRETTO_BASEPOINT_POINT: PodRistrettoPoint = PodRistrettoPoint([
     226, 242, 174, 10, 106, 188, 78, 113, 168, 132, 169, 97, 197, 0, 81, 95, 88, 227, 11, 106, 165,
