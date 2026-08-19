@@ -91,7 +91,6 @@ pub fn process_initialize_oracle_queue(accounts: &[AccountInfo<'_>], data: &[u8]
         if oracle_queue_info.owner != &ephemeral_vrf_api::ID {
             create_pda(
                 oracle_queue_info,
-                &ephemeral_vrf_api::ID,
                 MAX_EXTRA_BYTES,
                 seeds,
                 bump,
@@ -113,7 +112,6 @@ pub fn process_initialize_oracle_queue(accounts: &[AccountInfo<'_>], data: &[u8]
     if oracle_queue_info.owner != &ephemeral_vrf_api::ID {
         create_pda(
             oracle_queue_info,
-            &ephemeral_vrf_api::ID,
             target_size,
             seeds,
             bump,

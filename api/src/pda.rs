@@ -7,13 +7,13 @@ use solana_system_interface::instruction as system_instruction;
 #[inline(always)]
 pub fn create_pda<'a, 'info>(
     target_account: &'a AccountInfo<'info>,
-    owner: &Pubkey,
     space: usize,
     pda_seeds: &[&[u8]],
     pda_bump: u8,
     system_program: &'a AccountInfo<'info>,
     payer: &'a AccountInfo<'info>,
 ) -> ProgramResult {
+    let owner = &crate::ID;
     // Generate the PDA's signer seeds
     let pda_bump_slice = &[pda_bump];
     let pda_signer_seeds = [pda_seeds, &[pda_bump_slice]].concat();
