@@ -25,7 +25,7 @@ use ephemeral_vrf_api::prelude::*;
 /// 2. Verify the Oracle account is a signer.
 /// 3. Validate the Oracle data and queue account PDA seeds with the provided index.
 /// 4. Ensure the queue is empty.
-/// 5. Decrement Oracle.open_queue and close the queue account, transferring lamports to the Oracle.
+/// 5. Decrement Oracle.open_queues and close the queue account, transferring lamports to the Oracle.
 pub fn process_close_oracle_queue(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     // Parse args.
     let args = CloseOracleQueue::try_from_bytes(data)?;
@@ -69,7 +69,7 @@ pub fn process_close_oracle_queue(accounts: &[AccountInfo], data: &[u8]) -> Prog
 
     // Decrement oracle's open queue count
     let mut oracle_data_mut = oracle_data_info.as_account_mut::<Oracle>(&ephemeral_vrf_api::ID)?;
-    oracle_data_mut.open_queue = oracle_data_mut.open_queue.saturating_sub(1);
+    oracle_data_mut.open_queues = oracle_data_mut.open_queues.saturating_sub(1);
 
     close_account(oracle_queue_info, oracle_info)?;
 

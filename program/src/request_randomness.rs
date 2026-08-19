@@ -128,7 +128,7 @@ pub fn process_request_randomness(
             metas_len: 0,
             args_len: 0,
             priority_request: high_priority as u8,
-            used: 0,
+            used: 1,
             identity_mode: scoped as u8,
             identity_bump,
             _padding: [0u8; 2],

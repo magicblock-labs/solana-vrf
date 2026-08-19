@@ -6,7 +6,7 @@ use solana_curve25519::scalar::PodScalar;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
-pub enum EphemeralVrfInstruction {
+pub enum SolanaVrfInstruction {
     Initialize = 0,
     ModifyOracle = 1,
     InitializeOracleQueue = 2,
@@ -102,19 +102,19 @@ pub struct PurgeExpiredRequests {
     pub index: u8,
 }
 
-instruction8!(EphemeralVrfInstruction, Initialize);
-instruction8!(EphemeralVrfInstruction, ModifyOracle);
-instruction8!(EphemeralVrfInstruction, InitializeOracleQueue);
-instruction8!(EphemeralVrfInstruction, ProvideRandomness);
-instruction8!(EphemeralVrfInstruction, DelegateOracleQueue);
-instruction8!(EphemeralVrfInstruction, UndelegateOracleQueue);
-instruction8!(EphemeralVrfInstruction, CloseOracleQueue);
-instruction8!(EphemeralVrfInstruction, PurgeExpiredRequests);
+instruction8!(SolanaVrfInstruction, Initialize);
+instruction8!(SolanaVrfInstruction, ModifyOracle);
+instruction8!(SolanaVrfInstruction, InitializeOracleQueue);
+instruction8!(SolanaVrfInstruction, ProvideRandomness);
+instruction8!(SolanaVrfInstruction, DelegateOracleQueue);
+instruction8!(SolanaVrfInstruction, UndelegateOracleQueue);
+instruction8!(SolanaVrfInstruction, CloseOracleQueue);
+instruction8!(SolanaVrfInstruction, PurgeExpiredRequests);
 
 impl RequestRandomness {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = vec![
-            EphemeralVrfInstruction::RequestHighPriorityRandomness as u8,
+            SolanaVrfInstruction::RequestHighPriorityRandomness as u8,
             0,
             0,
             0,

@@ -193,9 +193,9 @@ impl<'a> QueueAccount<'a> {
     }
 
     #[inline]
-    fn item_next(cursor: usize, item: &QueueItem, align: usize) -> usize {
+    fn item_next(offset_index: usize, item: &QueueItem, align: usize) -> usize {
         let metas_bytes = (item.metas_len as usize) * size_of::<CompactAccountMeta>();
-        let item_end = cursor
+        let item_end = offset_index
             + size_of::<QueueItem>()
             + (item.callback_discriminator_len as usize)
             + metas_bytes
@@ -204,7 +204,7 @@ impl<'a> QueueAccount<'a> {
     }
 
     fn scan_for_reusable_span(&self, required_span: usize) -> QueueScan {
-        let mut cursor = Self::items_start();
+        let mut offset_index = Self::items_start();
         let end = core::cmp::min(self.acc.len(), self.header.cursor as usize);
         let align = core::mem::align_of::<QueueItem>();
         let item_size = size_of::<QueueItem>();
@@ -212,26 +212,26 @@ impl<'a> QueueAccount<'a> {
         let mut current_index = 0usize;
         let mut reusable_span = None;
 
-        while cursor + item_size <= end {
-            let bytes = &self.acc[cursor..cursor + item_size];
+        while offset_index + item_size <= end {
+            let bytes = &self.acc[offset_index..offset_index + item_size];
             let item = Self::read_item_unaligned(bytes);
-            let next = Self::item_next(cursor, &item, align);
+            let next = Self::item_next(offset_index, &item, align);
 
-            if next <= cursor {
+            if next <= offset_index {
                 break;
             }
 
             if item.used == 1 {
                 last_used_end_aligned = next;
                 current_index += 1;
-            } else if reusable_span.is_none() && next - cursor == required_span {
+            } else if reusable_span.is_none() && next - offset_index == required_span {
                 reusable_span = Some(ReusableSpan {
-                    item_pos: cursor,
+                    item_pos: offset_index,
                     logical_index: current_index,
                 });
             }
 
-            cursor = next;
+            offset_index = next;
         }
 
         QueueScan {
@@ -273,6 +273,8 @@ impl<'a> QueueAccount<'a> {
         item.metas_len = metas.len() as u16;
         item.args_offset = args_off as u32;
         item.args_len = args.len() as u16;
+        // Normalize the entry to active regardless of the caller-provided flag, so
+        // a written item is never a phantom that `len`/`is_empty` would miscount.
         item.used = 1;
 
         let dst = &mut self.acc[item_pos..item_pos + item_size];
@@ -304,28 +306,28 @@ impl<'a> QueueAccount<'a> {
     /// Recompute the end of the last used item and shrink the cursor to it,
     /// effectively removing all trailing holes. If no items are used, reset to items_start().
     fn trim_trailing_holes(&mut self) {
-        let mut cursor = Self::items_start();
+        let mut offset_index = Self::items_start();
         let end = core::cmp::min(self.acc.len(), self.header.cursor as usize);
         let align = core::mem::align_of::<QueueItem>();
 
         // Default to empty queue start; if we see used items we’ll update this
         let mut last_used_end_aligned = Self::items_start();
 
-        while cursor + size_of::<QueueItem>() <= end {
-            let bytes = &self.acc[cursor..cursor + size_of::<QueueItem>()];
+        while offset_index + size_of::<QueueItem>() <= end {
+            let bytes = &self.acc[offset_index..offset_index + size_of::<QueueItem>()];
             let item = Self::read_item_unaligned(bytes);
 
-            let next = Self::item_next(cursor, &item, align);
+            let next = Self::item_next(offset_index, &item, align);
 
             if item.used == 1 {
                 last_used_end_aligned = next;
             }
 
             // Corruption guard
-            if next <= cursor {
+            if next <= offset_index {
                 break;
             }
-            cursor = next;
+            offset_index = next;
         }
 
         // If nothing was used, this becomes items_start(); otherwise end of last used.
@@ -343,15 +345,15 @@ impl<'a> QueueAccount<'a> {
     ) -> Result<u32, ProgramError> {
         let layout = Self::item_layout(discriminator, metas, args)?;
         let scan = self.scan_for_reusable_span(layout.required_span);
-        let cursor = core::cmp::min(self.header.cursor as usize, scan.last_used_end_aligned);
+        let offset_index = core::cmp::min(self.header.cursor as usize, scan.last_used_end_aligned);
 
         if let Some(span) = scan.reusable_span {
-            if span.item_pos < cursor {
+            if span.item_pos < offset_index {
                 return Ok(span.item_pos as u32);
             }
         }
 
-        Ok(Self::align_up(cursor, core::mem::align_of::<QueueItem>()) as u32)
+        Ok(Self::align_up(offset_index, core::mem::align_of::<QueueItem>()) as u32)
     }
 
     /// Append a new item to the queue.
@@ -378,14 +380,14 @@ impl<'a> QueueAccount<'a> {
             }
         }
 
-        // Ensure we have enough room in the account before mutating any state
+        // `aligned` is where the item will start (cursor may have been advanced
+        // already). Ensure we have enough room before mutating any state.
         let aligned = Self::align_up(self.header.cursor as usize, items_align);
         if aligned.saturating_add(layout.total_needed) > self.acc.len() {
             return Err(ProgramError::AccountDataTooSmall);
         }
 
-        // Ensure items area starts at aligned offset; cursor may have been advanced already
-        let aligned = Self::align_up(self.header.cursor as usize, items_align);
+        // Ensure items area starts at the aligned offset.
         if aligned != self.header.cursor as usize {
             let start = self.header.cursor as usize;
             let end = aligned;
@@ -407,27 +409,27 @@ impl<'a> QueueAccount<'a> {
 
     /// Iterate over all used items.
     pub fn iter_items(&self) -> impl Iterator<Item = QueueItem> + '_ {
-        let mut cursor = Self::items_start();
+        let mut offset_index = Self::items_start();
         let end = core::cmp::min(self.acc.len(), self.header.cursor as usize);
         let align = core::mem::align_of::<QueueItem>();
 
         let mut out = Vec::new();
 
-        while cursor + size_of::<QueueItem>() <= end {
-            let bytes = &self.acc[cursor..cursor + size_of::<QueueItem>()];
+        while offset_index + size_of::<QueueItem>() <= end {
+            let bytes = &self.acc[offset_index..offset_index + size_of::<QueueItem>()];
             let item = Self::read_item_unaligned(bytes);
 
             if item.used == 1 {
                 out.push(item);
             }
 
-            let next = Self::item_next(cursor, &item, align);
+            let next = Self::item_next(offset_index, &item, align);
 
             // Prevent infinite loop in case of corrupted lengths
-            if next <= cursor {
+            if next <= offset_index {
                 break;
             }
-            cursor = next;
+            offset_index = next;
         }
 
         out.into_iter()
@@ -437,12 +439,12 @@ impl<'a> QueueAccount<'a> {
     pub fn get_item_by_index(&self, index: usize) -> Option<QueueItem> {
         let mut current = 0usize;
 
-        let mut cursor = Self::items_start();
+        let mut offset_index = Self::items_start();
         let end = core::cmp::min(self.acc.len(), self.header.cursor as usize);
         let align = core::mem::align_of::<QueueItem>();
 
-        while cursor + size_of::<QueueItem>() <= end {
-            let bytes = &self.acc[cursor..cursor + size_of::<QueueItem>()];
+        while offset_index + size_of::<QueueItem>() <= end {
+            let bytes = &self.acc[offset_index..offset_index + size_of::<QueueItem>()];
             let item = Self::read_item_unaligned(bytes);
 
             if item.used == 1 {
@@ -452,11 +454,11 @@ impl<'a> QueueAccount<'a> {
                 current += 1;
             }
 
-            let next = Self::item_next(cursor, &item, align);
-            if next <= cursor {
+            let next = Self::item_next(offset_index, &item, align);
+            if next <= offset_index {
                 break;
             }
-            cursor = next;
+            offset_index = next;
         }
 
         None
@@ -466,12 +468,12 @@ impl<'a> QueueAccount<'a> {
     pub fn remove_item(&mut self, index: usize) -> Result<QueueItem, ProgramError> {
         let mut current = 0usize;
 
-        let mut cursor = Self::items_start();
+        let mut offset_index = Self::items_start();
         let end = core::cmp::min(self.acc.len(), self.header.cursor as usize);
         let align = core::mem::align_of::<QueueItem>();
 
-        while cursor + size_of::<QueueItem>() <= end {
-            let bytes = &mut self.acc[cursor..cursor + size_of::<QueueItem>()];
+        while offset_index + size_of::<QueueItem>() <= end {
+            let bytes = &mut self.acc[offset_index..offset_index + size_of::<QueueItem>()];
             let mut item = Self::read_item_unaligned(bytes);
 
             if item.used == 1 {
@@ -489,11 +491,11 @@ impl<'a> QueueAccount<'a> {
                 current += 1;
             }
 
-            let next = Self::item_next(cursor, &item, align);
-            if next <= cursor {
+            let next = Self::item_next(offset_index, &item, align);
+            if next <= offset_index {
                 break;
             }
-            cursor = next;
+            offset_index = next;
         }
 
         Err(EphemeralVrfError::InvalidQueueIndex.into())
@@ -503,12 +505,12 @@ impl<'a> QueueAccount<'a> {
     pub fn find_item_by_id(&self, id: &[u8; 32]) -> Option<(usize, QueueItem)> {
         let mut current = 0usize;
 
-        let mut cursor = Self::items_start();
+        let mut offset_index = Self::items_start();
         let end = core::cmp::min(self.acc.len(), self.header.cursor as usize);
         let align = core::mem::align_of::<QueueItem>();
 
-        while cursor + size_of::<QueueItem>() <= end {
-            let bytes = &self.acc[cursor..cursor + size_of::<QueueItem>()];
+        while offset_index + size_of::<QueueItem>() <= end {
+            let bytes = &self.acc[offset_index..offset_index + size_of::<QueueItem>()];
             let item = Self::read_item_unaligned(bytes);
 
             if item.used == 1 {
@@ -518,11 +520,11 @@ impl<'a> QueueAccount<'a> {
                 current += 1;
             }
 
-            let next = Self::item_next(cursor, &item, align);
-            if next <= cursor {
+            let next = Self::item_next(offset_index, &item, align);
+            if next <= offset_index {
                 break;
             }
-            cursor = next;
+            offset_index = next;
         }
 
         None

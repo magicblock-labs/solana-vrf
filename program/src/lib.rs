@@ -24,6 +24,9 @@ use undelegate_oracle_queue::*;
 
 use ephemeral_vrf_api::prelude::*;
 
+// Program entrypoint, declared up front rather than after the helpers it dispatches to.
+solana_program::entrypoint!(process_instruction);
+
 fn parse_instruction8<'a, T: std::convert::TryFrom<u8>>(
     api_id: &'a Pubkey,
     program_id: &'a Pubkey,
@@ -47,37 +50,34 @@ pub fn process_instruction(
 ) -> ProgramResult {
     let (ix, data) = parse_instruction8(&ephemeral_vrf_api::ID, program_id, data)?;
     match ix {
-        EphemeralVrfInstruction::Initialize => process_initialize(accounts, data)?,
-        EphemeralVrfInstruction::ModifyOracle => process_modify_oracles(accounts, data)?,
-        EphemeralVrfInstruction::InitializeOracleQueue => {
+        SolanaVrfInstruction::Initialize => process_initialize(accounts, data)?,
+        SolanaVrfInstruction::ModifyOracle => process_modify_oracles(accounts, data)?,
+        SolanaVrfInstruction::InitializeOracleQueue => {
             process_initialize_oracle_queue(accounts, data)?
         }
-        EphemeralVrfInstruction::RequestHighPriorityRandomness => {
+        SolanaVrfInstruction::RequestHighPriorityRandomness => {
             process_request_randomness(accounts, data, true, false)?
         }
-        EphemeralVrfInstruction::RequestRandomness => {
+        SolanaVrfInstruction::RequestRandomness => {
             process_request_randomness(accounts, data, false, false)?
         }
-        EphemeralVrfInstruction::RequestHighPriorityRandomnessScoped => {
+        SolanaVrfInstruction::RequestHighPriorityRandomnessScoped => {
             process_request_randomness(accounts, data, true, true)?
         }
-        EphemeralVrfInstruction::RequestRandomnessScoped => {
+        SolanaVrfInstruction::RequestRandomnessScoped => {
             process_request_randomness(accounts, data, false, true)?
         }
-        EphemeralVrfInstruction::ProvideRandomness => process_provide_randomness(accounts, data)?,
-        EphemeralVrfInstruction::DelegateOracleQueue => {
-            process_delegate_oracle_queue(accounts, data)?
-        }
-        EphemeralVrfInstruction::UndelegateOracleQueue => {
+        SolanaVrfInstruction::ProvideRandomness => process_provide_randomness(accounts, data)?,
+        SolanaVrfInstruction::DelegateOracleQueue => process_delegate_oracle_queue(accounts, data)?,
+        SolanaVrfInstruction::UndelegateOracleQueue => {
             process_undelegate_oracle_queue(accounts, data)?
         }
-        EphemeralVrfInstruction::ProcessUndelegation => process_undelegation(accounts, data)?,
-        EphemeralVrfInstruction::CloseOracleQueue => process_close_oracle_queue(accounts, data)?,
-        EphemeralVrfInstruction::PurgeExpiredRequests => {
+        SolanaVrfInstruction::ProcessUndelegation => process_undelegation(accounts, data)?,
+        SolanaVrfInstruction::CloseOracleQueue => process_close_oracle_queue(accounts, data)?,
+        SolanaVrfInstruction::PurgeExpiredRequests => {
             process_purge_expired_requests(accounts, data)?
         }
     }
 
     Ok(())
 }
-solana_program::entrypoint!(process_instruction);
