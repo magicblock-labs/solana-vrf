@@ -13,15 +13,19 @@ use ephemeral_vrf_api::{
 use futures_util::future::join_all;
 use futures_util::FutureExt;
 use log::{error, info, trace, warn};
+use serde_json::json;
 use solana_account_decoder::UiAccountEncoding;
 use solana_client::client_error::ClientError;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_client::rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig};
 use solana_client::rpc_filter::RpcFilterType;
+use solana_client::rpc_request::RpcRequest;
+use solana_client::rpc_response::{OptionalContext, RpcKeyedAccount};
 use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_compute_budget_interface::ComputeBudgetInstruction;
 use solana_curve25519::{ristretto::PodRistrettoPoint, scalar::PodScalar};
 use solana_sdk::{
+    account::Account,
     instruction::InstructionError,
     pubkey::Pubkey,
     signature::Signer,
@@ -42,25 +46,36 @@ pub async fn fetch_and_process_program_accounts(
     blockhash_cache: &Arc<BlockhashCache>,
     filters: Vec<RpcFilterType>,
 ) -> Result<()> {
-    // min_context_slot binds the scan to this view, so absences in the
-    // result are meaningful for items enqueued strictly before it. Minus
-    // one because the tracker may already know a just-created bank the
-    // RPC node has not finished processing.
-    let view_slot = oracle_client.slot_tracker.current().saturating_sub(1);
     let config = RpcProgramAccountsConfig {
         account_config: RpcAccountInfoConfig {
             commitment: Some(CommitmentConfig::processed()),
             encoding: Some(UiAccountEncoding::Base64),
-            min_context_slot: Some(view_slot),
             ..Default::default()
         },
         filters: Some(filters),
+        with_context: Some(true),
         ..Default::default()
     };
 
-    let accounts = rpc_client
-        .get_program_accounts_with_config(&PROGRAM_ID, config)
+    // The response's context slot is the exact bank the scan was evaluated
+    // at, so absences in it are meaningful for items enqueued strictly
+    // earlier. Never demand a minimum slot here: the tracker follows the
+    // stream tip, which can run ahead of the scan node and would make the
+    // request fail (-32016) instead of returning a usable view.
+    let response = rpc_client
+        .send::<OptionalContext<Vec<RpcKeyedAccount>>>(
+            RpcRequest::GetProgramAccounts,
+            json!([PROGRAM_ID.to_string(), config]),
+        )
         .await?;
+    let (view_slot, keyed_accounts) = match response {
+        OptionalContext::Context(response) => (Some(response.context.slot), response.value),
+        OptionalContext::NoContext(value) => (None, value),
+    };
+    let accounts: Vec<(Pubkey, Account)> = keyed_accounts
+        .into_iter()
+        .filter_map(|entry| Some((entry.pubkey.parse().ok()?, entry.account.decode()?)))
+        .collect();
 
     let tasks = accounts.into_iter().filter_map(|(pubkey, acc)| {
         if acc.owner != PROGRAM_ID {
@@ -89,7 +104,7 @@ pub async fn fetch_and_process_program_accounts(
                     &pubkey,
                     queue,
                     Arc::clone(&bytes),
-                    Some(view_slot),
+                    view_slot,
                 )
                 .await
             })
