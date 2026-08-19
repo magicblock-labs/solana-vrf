@@ -386,15 +386,16 @@ impl OracleClient {
                     info!("Update source connected successfully");
                     // Requests that landed while the source was down produce no
                     // account notification: snapshot on every (re)connect,
-                    // spawned so a slow scan cannot stall stream consumption.
-                    // A scan already in flight is left to finish; the periodic
-                    // pass covers anything it predates.
-                    if let Ok(scan_guard) = Arc::clone(&scan_lock).try_lock_owned() {
+                    // spawned so a slow scan cannot stall stream consumption
+                    // and queued behind any scan already in flight (whose bank
+                    // may predate the gap).
+                    {
+                        let scan_lock = Arc::clone(&scan_lock);
                         let self_clone = Arc::clone(&self);
                         let rpc_client_clone = Arc::clone(&rpc_client);
                         let blockhash_cache_clone = Arc::clone(&blockhash_cache);
                         tokio::spawn(async move {
-                            let _scan_guard = scan_guard;
+                            let _scan_guard = scan_lock.lock_owned().await;
                             if let Err(err) = fetch_and_process_program_accounts(
                                 &self_clone,
                                 &rpc_client_clone,
