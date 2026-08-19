@@ -203,36 +203,56 @@ impl<'a> QueueAccount<'a> {
         Self::align_up(item_end, align)
     }
 
-    fn scan_for_reusable_span(&self, required_span: usize) -> QueueScan {
+    /// Walk the queue items once, calling `visit(logical_index, item_pos, next, item)`
+    /// for each item, where `logical_index` is the count of used items seen so far,
+    /// `item_pos` is the item's byte offset and `next` is the byte offset of the
+    /// following item. Returns early with the first `Some(_)` a visit produces.
+    ///
+    /// Centralizes the raw byte-offset / unaligned-read / alignment traversal that
+    /// every queue scan needs, so the delicate logic lives in exactly one place.
+    fn scan_items<R>(
+        &self,
+        mut visit: impl FnMut(usize, usize, usize, &QueueItem) -> Option<R>,
+    ) -> Option<R> {
+        let mut used_index = 0usize;
         let mut cursor = Self::items_start();
         let end = core::cmp::min(self.acc.len(), self.header.cursor as usize);
         let align = core::mem::align_of::<QueueItem>();
         let item_size = size_of::<QueueItem>();
-        let mut last_used_end_aligned = Self::items_start();
-        let mut current_index = 0usize;
-        let mut reusable_span = None;
 
         while cursor + item_size <= end {
             let bytes = &self.acc[cursor..cursor + item_size];
             let item = Self::read_item_unaligned(bytes);
             let next = Self::item_next(cursor, &item, align);
 
-            if next <= cursor {
-                break;
+            if let Some(result) = visit(used_index, cursor, next, &item) {
+                return Some(result);
             }
-
             if item.used == 1 {
-                last_used_end_aligned = next;
-                current_index += 1;
-            } else if reusable_span.is_none() && next - cursor == required_span {
-                reusable_span = Some(ReusableSpan {
-                    item_pos: cursor,
-                    logical_index: current_index,
-                });
+                used_index += 1;
             }
 
             cursor = next;
         }
+
+        None
+    }
+
+    fn scan_for_reusable_span(&self, required_span: usize) -> QueueScan {
+        let mut last_used_end_aligned = Self::items_start();
+        let mut reusable_span = None;
+
+        self.scan_items(|logical_index, item_pos, next, item| {
+            if item.used == 1 {
+                last_used_end_aligned = next;
+            } else if reusable_span.is_none() && next - item_pos == required_span {
+                reusable_span = Some(ReusableSpan {
+                    item_pos,
+                    logical_index,
+                });
+            }
+            None::<()>
+        });
 
         QueueScan {
             last_used_end_aligned,
@@ -304,34 +324,19 @@ impl<'a> QueueAccount<'a> {
     /// Recompute the end of the last used item and shrink the cursor to it,
     /// effectively removing all trailing holes. If no items are used, reset to items_start().
     fn trim_trailing_holes(&mut self) {
-        let mut cursor = Self::items_start();
-        let end = core::cmp::min(self.acc.len(), self.header.cursor as usize);
-        let align = core::mem::align_of::<QueueItem>();
-
-        // Default to empty queue start; if we see used items we’ll update this
+        // Default to empty queue start; if we see used items we’ll update this.
         let mut last_used_end_aligned = Self::items_start();
 
-        while cursor + size_of::<QueueItem>() <= end {
-            let bytes = &self.acc[cursor..cursor + size_of::<QueueItem>()];
-            let item = Self::read_item_unaligned(bytes);
-
-            let next = Self::item_next(cursor, &item, align);
-
+        self.scan_items(|_, _, next, item| {
             if item.used == 1 {
                 last_used_end_aligned = next;
             }
+            None::<()>
+        });
 
-            // Corruption guard
-            if next <= cursor {
-                break;
-            }
-            cursor = next;
-        }
-
-        // If nothing was used, this becomes items_start(); otherwise end of last used.
-        let new_cursor = last_used_end_aligned;
-        if (new_cursor as u32) < self.header.cursor {
-            self.header.cursor = new_cursor as u32;
+        // If nothing was used, this stays items_start(); otherwise end of last used.
+        if (last_used_end_aligned as u32) < self.header.cursor {
+            self.header.cursor = last_used_end_aligned as u32;
         }
     }
 
@@ -407,125 +412,46 @@ impl<'a> QueueAccount<'a> {
 
     /// Iterate over all used items.
     pub fn iter_items(&self) -> impl Iterator<Item = QueueItem> + '_ {
-        let mut cursor = Self::items_start();
-        let end = core::cmp::min(self.acc.len(), self.header.cursor as usize);
-        let align = core::mem::align_of::<QueueItem>();
-
         let mut out = Vec::new();
-
-        while cursor + size_of::<QueueItem>() <= end {
-            let bytes = &self.acc[cursor..cursor + size_of::<QueueItem>()];
-            let item = Self::read_item_unaligned(bytes);
-
+        self.scan_items(|_, _, _, item| {
             if item.used == 1 {
-                out.push(item);
+                out.push(*item);
             }
-
-            let next = Self::item_next(cursor, &item, align);
-
-            // Prevent infinite loop in case of corrupted lengths
-            if next <= cursor {
-                break;
-            }
-            cursor = next;
-        }
-
+            None::<()>
+        });
         out.into_iter()
     }
 
     /// Find the nth used item (logical index) and return its value.
     pub fn get_item_by_index(&self, index: usize) -> Option<QueueItem> {
-        let mut current = 0usize;
-
-        let mut cursor = Self::items_start();
-        let end = core::cmp::min(self.acc.len(), self.header.cursor as usize);
-        let align = core::mem::align_of::<QueueItem>();
-
-        while cursor + size_of::<QueueItem>() <= end {
-            let bytes = &self.acc[cursor..cursor + size_of::<QueueItem>()];
-            let item = Self::read_item_unaligned(bytes);
-
-            if item.used == 1 {
-                if current == index {
-                    return Some(item);
-                }
-                current += 1;
-            }
-
-            let next = Self::item_next(cursor, &item, align);
-            if next <= cursor {
-                break;
-            }
-            cursor = next;
-        }
-
-        None
+        self.scan_items(|logical_index, _, _, item| {
+            (item.used == 1 && logical_index == index).then_some(*item)
+        })
     }
 
     /// Remove the nth used item (logical index).
     pub fn remove_item(&mut self, index: usize) -> Result<QueueItem, ProgramError> {
-        let mut current = 0usize;
+        let (item_pos, mut item) = self
+            .scan_items(|logical_index, item_pos, _, item| {
+                (item.used == 1 && logical_index == index).then_some((item_pos, *item))
+            })
+            .ok_or::<ProgramError>(EphemeralVrfError::InvalidQueueIndex.into())?;
 
-        let mut cursor = Self::items_start();
-        let end = core::cmp::min(self.acc.len(), self.header.cursor as usize);
-        let align = core::mem::align_of::<QueueItem>();
+        // Logically remove: clear the used flag in place and trim trailing holes.
+        item.used = 0;
+        self.header.item_count = self.header.item_count.saturating_sub(1);
+        let bytes = &mut self.acc[item_pos..item_pos + size_of::<QueueItem>()];
+        Self::write_item_unaligned(bytes, &item);
+        self.trim_trailing_holes();
 
-        while cursor + size_of::<QueueItem>() <= end {
-            let bytes = &mut self.acc[cursor..cursor + size_of::<QueueItem>()];
-            let mut item = Self::read_item_unaligned(bytes);
-
-            if item.used == 1 {
-                if current == index {
-                    // Logically remove
-                    item.used = 0;
-                    self.header.item_count = self.header.item_count.saturating_sub(1);
-                    // Write back modified item using unaligned write
-                    Self::write_item_unaligned(bytes, &item);
-
-                    self.trim_trailing_holes();
-
-                    return Ok(item);
-                }
-                current += 1;
-            }
-
-            let next = Self::item_next(cursor, &item, align);
-            if next <= cursor {
-                break;
-            }
-            cursor = next;
-        }
-
-        Err(EphemeralVrfError::InvalidQueueIndex.into())
+        Ok(item)
     }
 
     /// Find first used item by id, returning its logical index and value.
     pub fn find_item_by_id(&self, id: &[u8; 32]) -> Option<(usize, QueueItem)> {
-        let mut current = 0usize;
-
-        let mut cursor = Self::items_start();
-        let end = core::cmp::min(self.acc.len(), self.header.cursor as usize);
-        let align = core::mem::align_of::<QueueItem>();
-
-        while cursor + size_of::<QueueItem>() <= end {
-            let bytes = &self.acc[cursor..cursor + size_of::<QueueItem>()];
-            let item = Self::read_item_unaligned(bytes);
-
-            if item.used == 1 {
-                if &item.id == id {
-                    return Some((current, item));
-                }
-                current += 1;
-            }
-
-            let next = Self::item_next(cursor, &item, align);
-            if next <= cursor {
-                break;
-            }
-            cursor = next;
-        }
-
-        None
+        self.scan_items(|logical_index, _, _, item| {
+            (item.used == 1 && &item.id == id).then_some((logical_index, *item))
+        })
     }
 
     pub fn is_empty(&self) -> bool {
