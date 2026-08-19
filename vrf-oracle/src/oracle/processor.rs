@@ -57,11 +57,9 @@ pub async fn fetch_and_process_program_accounts(
         ..Default::default()
     };
 
-    // The response's context slot is the exact bank the scan was evaluated
-    // at, so absences in it are meaningful for items enqueued strictly
-    // earlier. Never demand a minimum slot here: the tracker follows the
-    // stream tip, which can run ahead of the scan node and would make the
-    // request fail (-32016) instead of returning a usable view.
+    // The response's context slot orders this view against notifications.
+    // Never demand a minimum slot: the tracker can run ahead of the scan
+    // node, failing the request (-32016) instead of returning a usable view.
     let response = rpc_client
         .send::<OptionalContext<Vec<RpcKeyedAccount>>>(
             RpcRequest::GetProgramAccounts,
@@ -109,6 +107,7 @@ pub async fn fetch_and_process_program_accounts(
                     queue,
                     Arc::clone(&bytes),
                     Some(view_slot),
+                    true,
                 )
                 .await
             })
@@ -125,6 +124,7 @@ pub async fn fetch_and_process_program_accounts(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn process_oracle_queue(
     oracle_client: &Arc<OracleClient>,
     rpc_client: &Arc<RpcClient>,
@@ -133,21 +133,30 @@ pub async fn process_oracle_queue(
     oracle_queue: &Queue,
     account_bytes: Arc<Vec<u8>>,
     notification_slot: Option<u64>,
+    is_snapshot: bool,
 ) {
     if oracle_queue_pda(&oracle_client.keypair.pubkey(), oracle_queue.index).0 == *queue
         && oracle_client.should_process_queue(rpc_client, queue).await
     {
-        // Process views in slot order per queue: an older snapshot racing a
-        // newer notification could otherwise resurrect a completed request
-        // (spawning a duplicate fulfillment) or cancel a live one.
-        if let Some(view_slot) = notification_slot {
+        // Apply views in per-queue slot order, holding the guard across the
+        // task-map mutations below so a stale view cannot resurrect or cancel
+        // requests. Snapshots lack intra-slot order: require strictly newer.
+        let _view_order_guard = {
             let mut latest_views = oracle_client.latest_view_slots.write().await;
-            let latest = latest_views.entry(queue.to_string()).or_insert(0);
-            if view_slot < *latest {
-                return;
+            if let Some(view_slot) = notification_slot {
+                let latest = latest_views.entry(queue.to_string()).or_insert(0);
+                let stale = if is_snapshot {
+                    view_slot <= *latest
+                } else {
+                    view_slot < *latest
+                };
+                if stale {
+                    return;
+                }
+                *latest = view_slot;
             }
-            *latest = view_slot;
-        }
+            latest_views
+        };
 
         if oracle_queue.item_count > 0 {
             info!(

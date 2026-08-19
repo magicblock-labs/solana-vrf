@@ -420,6 +420,7 @@ impl OracleClient {
                             &queue,
                             bytes,
                             Some(notification_slot),
+                            false,
                         )
                         .await;
                     }
