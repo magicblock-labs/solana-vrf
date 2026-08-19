@@ -46,9 +46,6 @@ impl QueueItem {
     pub fn callback_discriminator<'a>(&self, acc: &'a [u8]) -> &'a [u8] {
         let start = self.callback_discriminator_offset as usize;
         let end = start + self.callback_discriminator_len as usize;
-        if end > acc.len() {
-            return &[];
-        }
         &acc[start..end]
     }
 
@@ -58,10 +55,6 @@ impl QueueItem {
         let byte_len = count * size_of::<CompactAccountMeta>();
         let end = start + byte_len;
 
-        if end > acc.len() || start > end {
-            return &[];
-        }
-
         let bytes = &acc[start..end];
 
         unsafe { core::slice::from_raw_parts(bytes.as_ptr() as *const CompactAccountMeta, count) }
@@ -70,9 +63,6 @@ impl QueueItem {
     pub fn callback_args<'a>(&self, acc: &'a [u8]) -> &'a [u8] {
         let start = self.args_offset as usize;
         let end = start + self.args_len as usize;
-        if end > acc.len() || start > end {
-            return &[];
-        }
         &acc[start..end]
     }
 }
