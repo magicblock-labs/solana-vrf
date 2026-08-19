@@ -1,12 +1,21 @@
-# EphemeralVrf
+# SolanaVrf
 
-**EphemeralVrf** is a Verifiable Random Function (VRF) implementation for Solana that provides secure, verifiable randomness for decentralized applications.
-It uses a network of oracles to generate and verify random values on-chain.
+**SolanaVrf** is a Verifiable Random Function (VRF) for Solana. Programs request randomness, an oracle generates it together with a cryptographic proof, and the VRF program verifies that proof onchain before delivering the value to your callback. Randomness that fails verification is rejected and never reaches your program.
+
+The same program and SDK also work inside [MagicBlock Ephemeral Rollups](https://docs.magicblock.gg), so a Solana program that uses SolanaVrf keeps working when it is delegated to a rollup. No code changes are needed beyond selecting the rollup queue.
 
 **Start here:** read the [MagicBlock Solana VRF docs](https://docs.magicblock.gg/pages/verifiable-randomness-functions-vrfs/introduction/solana-vrf) for the end-to-end integration flow.
 
+## Where it runs
+
+| Environment | Queue constant | Notes |
+|---|---|---|
+| Solana (mainnet, devnet, localnet) | `DEFAULT_QUEUE` | The primary target. Proof verified by the VRF program on Solana. |
+| Ephemeral Rollups | `DEFAULT_EPHEMERAL_QUEUE` | Same program, same proof verification, lower latency for delegated programs. |
+
 ## Security and trust
 
+- **Onchain proof verification:** every fulfillment carries an RFC 9381 proof that the VRF program verifies onchain in [`ProvideRandomness`](program/src/provide_randomness.rs). An invalid proof fails with `InvalidProof` and the callback is never invoked, so consumers never need to trust the oracle.
 - **Audit:** [2025-08-06 VRF Program Audit Report by Zenith](security_audits/2025-08-06%20VRF%20Program%20Audit%20Report%20by%20Zenith.pdf).
 - **Standards-based design:** the implementation follows [RFC 9381](https://datatracker.ietf.org/doc/html/rfc9381), using Curve25519's Ristretto group and Schnorr-like proof verification.
 
@@ -53,7 +62,7 @@ The [MagicBlock VRF quickstart](https://docs.magicblock.gg/pages/verifiable-rand
    ctx.accounts.invoke_signed_vrf(&ctx.accounts.payer.to_account_info(), &ix)?;
    ```
 
-4. Add `#[vrf]` to the request context so `invoke_signed_vrf` is available, and select the queue for your execution path:
+4. Add `#[vrf]` to the request context so `invoke_signed_vrf` is available, and pick the queue for your execution path: `DEFAULT_QUEUE` on Solana, `DEFAULT_EPHEMERAL_QUEUE` when the program is delegated to an Ephemeral Rollup.
 
    ```rust
    #[vrf]
@@ -69,7 +78,7 @@ The [MagicBlock VRF quickstart](https://docs.magicblock.gg/pages/verifiable-rand
    }
    ```
 
-5. Consume randomness only in a callback that validates the VRF signer. This is where your app actually uses the random bytes: convert them into a domain value, then update program state.
+5. Consume randomness only in a callback that validates the VRF signer. This signer can only be produced by the VRF program, and the VRF program only signs after the proof has been verified onchain. This is where your app actually uses the random bytes: convert them into a domain value, then update program state.
 
    ```rust
    pub fn callback_roll_dice(ctx: Context<CallbackRollDiceCtx>, randomness: [u8; 32]) -> Result<()> {
@@ -91,13 +100,11 @@ The [MagicBlock VRF quickstart](https://docs.magicblock.gg/pages/verifiable-rand
    }
    ```
 
-Use `DEFAULT_EPHEMERAL_QUEUE` for delegated Ephemeral Rollup programs, or `DEFAULT_QUEUE` for regular base-layer requests.
-
 ## Overview
 
-EphemeralVrf enables dApps to request unpredictable, tamper-resistant random values that can be verified by anyone.
+SolanaVrf lets Solana programs request unpredictable, tamper-resistant random values. Each value ships with a proof that is verified onchain, so anyone can confirm it was derived correctly from the oracle's key and the request. The same flow works unchanged for programs delegated to Ephemeral Rollups.
 
-The implementation follows [RFC 9381](https://datatracker.ietf.org/doc/html/rfc9381), utilizing Curve25519's Ristretto group for elliptic curve operations and Schnorr-like signatures for proof verification.
+The crate is published as `ephemeral-vrf-sdk` for historical reasons; it is the SDK for SolanaVrf on both Solana and Ephemeral Rollups.
 
 ## API
 
@@ -141,7 +148,7 @@ A Verifiable Random Function (VRF) is a cryptographic primitive that maps inputs
 2. Verifiability: Anyone with the public key can verify that an output was correctly computed from the input without learning the private key.
 3. Pseudorandomness: The output appears random to anyone who doesn't know the private key.
 
-In EphemeralVrf, oracles use VRFs to generate random values that can be verified on-chain, ensuring that the randomness is both unpredictable and tamper-resistant.
+In SolanaVrf, oracles use VRFs to generate random values that are verified onchain by the VRF program, ensuring that the randomness is both unpredictable and tamper-resistant.
 
 ## VRF Implementation
 

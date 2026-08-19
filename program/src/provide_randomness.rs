@@ -13,9 +13,28 @@ const ALLOWED_EXECUTABLE_CALLBACK_ACCOUNTS: [Pubkey; 8] = [
     pubkey!("Magic11111111111111111111111111111111111111"),
 ];
 
+/// BPF/native loaders. An account owned by one of these is a program (or its
+/// program-data/buffer account), even when the `executable` flag is not set.
+const LOADERS: [Pubkey; 5] = [
+    pubkey!("NativeLoader1111111111111111111111111111111"),
+    pubkey!("BPFLoader1111111111111111111111111111111111"),
+    pubkey!("BPFLoader2111111111111111111111111111111111"),
+    pubkey!("BPFLoaderUpgradeab1e11111111111111111111111"),
+    pubkey!("LoaderV411111111111111111111111111111111111"),
+];
+
+/// Detect a program account. The `executable` flag alone is not reliable
+/// (runtime checks on it were removed, legacy programs may leave it false, and
+/// future loaders might not set it), so also treat any account owned by a BPF
+/// loader as a program. This is a conservative superset (it also matches
+/// program-data and buffer accounts), which is fine for a callback filter.
+fn is_program(account: &AccountInfo<'_>) -> bool {
+    account.executable || LOADERS.contains(account.owner)
+}
+
 fn has_disallowed_executable_callback_account(accounts: &[AccountInfo<'_>]) -> bool {
     accounts.iter().any(|account| {
-        account.executable && !ALLOWED_EXECUTABLE_CALLBACK_ACCOUNTS.contains(account.key)
+        is_program(account) && !ALLOWED_EXECUTABLE_CALLBACK_ACCOUNTS.contains(account.key)
     })
 }
 
