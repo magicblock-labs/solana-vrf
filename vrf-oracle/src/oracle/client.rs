@@ -12,7 +12,10 @@ use solana_commitment_config::CommitmentConfig;
 use solana_sdk::{pubkey::Pubkey, signature::Keypair};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::Duration,
 };
 use tokio::sync::{watch, RwLock};
@@ -352,6 +355,7 @@ impl OracleClient {
         // Serialize full-program scans: the periodic and reconnect paths
         // share one flight so a slow RPC cannot accumulate overlapping scans.
         let scan_lock = Arc::new(tokio::sync::Mutex::new(()));
+        let scan_queued = Arc::new(AtomicBool::new(false));
 
         // Periodically refresh and process program accounts every 5 seconds
         {
@@ -388,14 +392,17 @@ impl OracleClient {
                     // account notification: snapshot on every (re)connect,
                     // spawned so a slow scan cannot stall stream consumption
                     // and queued behind any scan already in flight (whose bank
-                    // may predate the gap).
-                    {
+                    // may predate the gap). At most one snapshot waits: a
+                    // pending one covers every later gap as well.
+                    if !scan_queued.swap(true, Ordering::SeqCst) {
                         let scan_lock = Arc::clone(&scan_lock);
+                        let scan_queued = Arc::clone(&scan_queued);
                         let self_clone = Arc::clone(&self);
                         let rpc_client_clone = Arc::clone(&rpc_client);
                         let blockhash_cache_clone = Arc::clone(&blockhash_cache);
                         tokio::spawn(async move {
                             let _scan_guard = scan_lock.lock_owned().await;
+                            scan_queued.store(false, Ordering::SeqCst);
                             if let Err(err) = fetch_and_process_program_accounts(
                                 &self_clone,
                                 &rpc_client_clone,
