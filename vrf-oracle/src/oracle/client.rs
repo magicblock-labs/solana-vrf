@@ -238,6 +238,8 @@ pub struct OracleClient {
     delegated_queue_statuses: Arc<RwLock<Option<HashMap<Pubkey, bool>>>>,
     priority_fee_cache: Arc<RwLock<Option<(u64, Instant)>>>,
     priority_fee_refresh: Arc<tokio::sync::Mutex<()>>,
+    // Newest view slot processed per queue; older views are discarded.
+    pub latest_view_slots: Arc<RwLock<HashMap<QueueKey, u64>>>,
 }
 
 #[async_trait]
@@ -274,6 +276,7 @@ impl OracleClient {
             delegated_queue_statuses: Arc::new(RwLock::new(None)),
             priority_fee_cache: Arc::new(RwLock::new(None)),
             priority_fee_refresh: Arc::new(tokio::sync::Mutex::new(())),
+            latest_view_slots: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 

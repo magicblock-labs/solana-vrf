@@ -69,8 +69,12 @@ pub async fn fetch_and_process_program_accounts(
         )
         .await?;
     let (view_slot, keyed_accounts) = match response {
-        OptionalContext::Context(response) => (Some(response.context.slot), response.value),
-        OptionalContext::NoContext(value) => (None, value),
+        OptionalContext::Context(response) => (response.context.slot, response.value),
+        // A contextless response cannot be ordered against live
+        // notifications; treat it as a failed scan and retry later.
+        OptionalContext::NoContext(_) => {
+            anyhow::bail!("getProgramAccounts returned no context slot")
+        }
     };
     let accounts: Vec<(Pubkey, Account)> = keyed_accounts
         .into_iter()
@@ -104,7 +108,7 @@ pub async fn fetch_and_process_program_accounts(
                     &pubkey,
                     queue,
                     Arc::clone(&bytes),
-                    view_slot,
+                    Some(view_slot),
                 )
                 .await
             })
@@ -133,6 +137,18 @@ pub async fn process_oracle_queue(
     if oracle_queue_pda(&oracle_client.keypair.pubkey(), oracle_queue.index).0 == *queue
         && oracle_client.should_process_queue(rpc_client, queue).await
     {
+        // Process views in slot order per queue: an older snapshot racing a
+        // newer notification could otherwise resurrect a completed request
+        // (spawning a duplicate fulfillment) or cancel a live one.
+        if let Some(view_slot) = notification_slot {
+            let mut latest_views = oracle_client.latest_view_slots.write().await;
+            let latest = latest_views.entry(queue.to_string()).or_insert(0);
+            if view_slot < *latest {
+                return;
+            }
+            *latest = view_slot;
+        }
+
         if oracle_queue.item_count > 0 {
             info!(
                 "Processing queue: {}, with len: {}",
