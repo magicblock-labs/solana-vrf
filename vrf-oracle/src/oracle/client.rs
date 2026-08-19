@@ -59,6 +59,7 @@ struct DelegationStatusResponse {
 }
 
 const PRIORITY_FEE_MAX_AGE: Duration = Duration::from_secs(10);
+const PRIORITY_FEE_FETCH_TIMEOUT: Duration = Duration::from_millis(500);
 const DEFAULT_PRIORITY_FEE_MICRO_LAMPORTS: u64 = 10_000;
 const EARLY_SEND_DIVISOR: u32 = 20;
 const EARLY_SEND_MAX: Duration = Duration::from_millis(20);
@@ -298,9 +299,19 @@ impl OracleClient {
         if let Some(fee) = self.cached_priority_fee().await {
             return fee;
         }
-        let fee = Self::fetch_priority_fee(rpc_client)
-            .await
-            .unwrap_or(DEFAULT_PRIORITY_FEE_MICRO_LAMPORTS);
+        // Bound the refresh so a slow endpoint cannot delay sends; fall back
+        // to the last known value and retry next window.
+        let fee = match tokio::time::timeout(
+            PRIORITY_FEE_FETCH_TIMEOUT,
+            Self::fetch_priority_fee(rpc_client),
+        )
+        .await
+        {
+            Ok(Ok(fee)) => fee,
+            _ => (*self.priority_fee_cache.read().await)
+                .map(|(fee, _)| fee)
+                .unwrap_or(DEFAULT_PRIORITY_FEE_MICRO_LAMPORTS),
+        };
         *self.priority_fee_cache.write().await = Some((fee, Instant::now()));
         fee
     }
