@@ -1,8 +1,9 @@
 use ephemeral_vrf_api::prelude::*;
+use solana_program::epoch_schedule::EpochSchedule;
 use solana_program::msg;
 
-/// Remove all requests in the queue whose age (current_slot - item.slot)
-/// exceeds the TTL.
+/// Remove all requests in the queue whose wall-clock age exceeds
+/// `QUEUE_TTL_SECONDS`.
 ///
 /// Accounts:
 /// 0. `[]` oracle_info               – The oracle public key used in the queue PDA seeds
@@ -28,7 +29,11 @@ pub fn process_purge_expired_requests(accounts: &[AccountInfo<'_>], data: &[u8])
             &ephemeral_vrf_api::ID,
         )?;
 
-    let current_slot = Clock::get()?.slot;
+    // Measure request age in wall-clock seconds rather than a fixed slot count,
+    // using the current epoch's average slot duration, so expiry stays correct
+    // if the slot duration changes.
+    let clock = Clock::get()?;
+    let epoch_start_slot = EpochSchedule::get()?.get_first_slot_in_epoch(clock.epoch);
 
     // Borrow queue data and scan/remove expired items using QueueAccount view
     let mut acc_data = oracle_queue_info.try_borrow_mut_data()?;
@@ -45,8 +50,20 @@ pub fn process_purge_expired_requests(accounts: &[AccountInfo<'_>], data: &[u8])
         let item = queue_acc
             .get_item_by_index(i)
             .ok_or(ProgramError::InvalidAccountData)?;
-        let age = current_slot.saturating_sub(item.slot);
-        if age > QUEUE_TTL_SLOTS {
+        // Age in wall-clock seconds, derived from the epoch's average slot
+        // duration. Computed in i128 to avoid overflow; clamps keep it >= 0.
+        // Only age accrued within the current epoch is counted (slot_age is
+        // capped at elapsed_slots), so the estimate can never exceed the real
+        // time elapsed since the epoch start — a request is never expired
+        // before its TTL, even for requests that span an epoch boundary.
+        let elapsed_slots = clock.slot.saturating_sub(epoch_start_slot).max(1) as i128;
+        let elapsed_secs = clock
+            .unix_timestamp
+            .saturating_sub(clock.epoch_start_timestamp)
+            .max(0) as i128;
+        let slot_age = (clock.slot.saturating_sub(item.slot) as i128).min(elapsed_slots);
+        let age_secs = ((slot_age * elapsed_secs) / elapsed_slots) as i64;
+        if age_secs > QUEUE_TTL_SECONDS {
             let cost = if item.priority_request == 1 {
                 VRF_HIGH_PRIORITY_LAMPORTS_COST
             } else {

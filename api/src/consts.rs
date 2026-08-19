@@ -20,8 +20,9 @@ pub const VRF_PREFIX_HASH_TO_SCALAR: &[u8] = b"VRF-Ephem-HashToScalar";
 pub const VRF_HIGH_PRIORITY_LAMPORTS_COST: u64 = 800000;
 pub const VRF_LAMPORTS_COST: u64 = 500000;
 
-// ~2 minutes on Solana (~500ms/slot) ≈ 240 slots. Round to 240.
-pub const QUEUE_TTL_SLOTS: u64 = 240;
+/// Requests expire after this many seconds. Measured in wall-clock time so
+/// expiry stays correct if Solana's slot duration changes in the future.
+pub const QUEUE_TTL_SECONDS: i64 = 120;
 
 pub const RISTRETTO_BASEPOINT_POINT: PodRistrettoPoint = PodRistrettoPoint([
     226, 242, 174, 10, 106, 188, 78, 113, 168, 132, 169, 97, 197, 0, 81, 95, 88, 227, 11, 106, 165,

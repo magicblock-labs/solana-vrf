@@ -5,7 +5,7 @@ use ephemeral_vrf::vrf::{compute_vrf, verify_vrf};
 use ephemeral_vrf_api::{
     prelude::{
         provide_randomness_with_identity_mode, purge_expired_requests, EphemeralVrfError, Queue,
-        QueueAccount, QueueItem, QUEUE_TTL_SLOTS,
+        QueueAccount, QueueItem,
     },
     state::oracle_queue_pda,
     ID as PROGRAM_ID,
@@ -255,7 +255,8 @@ pub async fn process_oracle_queue(
                     let mut use_backoff = false;
                     let transaction = match prepared_transaction.take() {
                         Some(transaction)
-                            if attempt_slot.saturating_sub(item.slot) <= QUEUE_TTL_SLOTS =>
+                            if attempt_slot.saturating_sub(item.slot)
+                                <= oracle_client_for_proc.slot_tracker.ttl_slots() =>
                         {
                             transaction
                         }
@@ -311,8 +312,12 @@ pub async fn process_oracle_queue(
                                     use_backoff = false;
                                 }
                                 if code == ANCHOR_CONSTRAINT_ADDRESS_ERROR {
-                                    let purge_slot =
-                                        item.slot.saturating_add(QUEUE_TTL_SLOTS).saturating_add(1);
+                                    let purge_slot = item
+                                        .slot
+                                        .saturating_add(
+                                            oracle_client_for_proc.slot_tracker.ttl_slots(),
+                                        )
+                                        .saturating_add(1);
                                     oracle_client_for_proc
                                         .slot_tracker
                                         .wait_for_slot(purge_slot)
@@ -443,7 +448,7 @@ impl ProcessableItem {
 
         // Check whether the request is expired
         let age = current_slot.saturating_sub(self.0.slot);
-        let is_purge = age > QUEUE_TTL_SLOTS;
+        let is_purge = age > oracle_client.slot_tracker.ttl_slots();
         let ix = if is_purge {
             // Build purge instruction for the queue index
             purge_expired_requests(oracle_client.keypair.pubkey(), queue_meta.index)
