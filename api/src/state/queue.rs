@@ -217,10 +217,6 @@ impl<'a> QueueAccount<'a> {
             let item = Self::read_item_unaligned(bytes);
             let next = Self::item_next(cursor, &item, align);
 
-            if next <= cursor {
-                break;
-            }
-
             if item.used == 1 {
                 last_used_end_aligned = next;
                 current_index += 1;
@@ -321,10 +317,6 @@ impl<'a> QueueAccount<'a> {
                 last_used_end_aligned = next;
             }
 
-            // Corruption guard
-            if next <= cursor {
-                break;
-            }
             cursor = next;
         }
 
@@ -422,11 +414,6 @@ impl<'a> QueueAccount<'a> {
             }
 
             let next = Self::item_next(cursor, &item, align);
-
-            // Prevent infinite loop in case of corrupted lengths
-            if next <= cursor {
-                break;
-            }
             cursor = next;
         }
 
@@ -453,9 +440,6 @@ impl<'a> QueueAccount<'a> {
             }
 
             let next = Self::item_next(cursor, &item, align);
-            if next <= cursor {
-                break;
-            }
             cursor = next;
         }
 
@@ -490,9 +474,6 @@ impl<'a> QueueAccount<'a> {
             }
 
             let next = Self::item_next(cursor, &item, align);
-            if next <= cursor {
-                break;
-            }
             cursor = next;
         }
 
@@ -519,9 +500,6 @@ impl<'a> QueueAccount<'a> {
             }
 
             let next = Self::item_next(cursor, &item, align);
-            if next <= cursor {
-                break;
-            }
             cursor = next;
         }
 
