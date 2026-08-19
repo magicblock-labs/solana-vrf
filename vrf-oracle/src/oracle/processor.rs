@@ -13,15 +13,19 @@ use ephemeral_vrf_api::{
 use futures_util::future::join_all;
 use futures_util::FutureExt;
 use log::{error, info, trace, warn};
+use serde_json::json;
 use solana_account_decoder::UiAccountEncoding;
 use solana_client::client_error::ClientError;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_client::rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig};
 use solana_client::rpc_filter::RpcFilterType;
+use solana_client::rpc_request::RpcRequest;
+use solana_client::rpc_response::{OptionalContext, RpcKeyedAccount};
 use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_compute_budget_interface::ComputeBudgetInstruction;
 use solana_curve25519::{ristretto::PodRistrettoPoint, scalar::PodScalar};
 use solana_sdk::{
+    account::Account,
     instruction::InstructionError,
     pubkey::Pubkey,
     signature::Signer,
@@ -34,6 +38,7 @@ use tokio::task;
 
 const ANCHOR_CONSTRAINT_ADDRESS_ERROR: u32 = 2012;
 const BLOCKHASH_MAX_AGE: Duration = Duration::from_secs(3);
+const MAX_PRIORITY_FEE_LAMPORTS: u64 = 60_000;
 
 pub async fn fetch_and_process_program_accounts(
     oracle_client: &Arc<OracleClient>,
@@ -48,12 +53,31 @@ pub async fn fetch_and_process_program_accounts(
             ..Default::default()
         },
         filters: Some(filters),
+        with_context: Some(true),
         ..Default::default()
     };
 
-    let accounts = rpc_client
-        .get_program_accounts_with_config(&PROGRAM_ID, config)
+    // The response's context slot orders this view against notifications.
+    // Never demand a minimum slot: the tracker can run ahead of the scan
+    // node, failing the request (-32016) instead of returning a usable view.
+    let response = rpc_client
+        .send::<OptionalContext<Vec<RpcKeyedAccount>>>(
+            RpcRequest::GetProgramAccounts,
+            json!([PROGRAM_ID.to_string(), config]),
+        )
         .await?;
+    let (view_slot, keyed_accounts) = match response {
+        OptionalContext::Context(response) => (response.context.slot, response.value),
+        // A contextless response cannot be ordered against live
+        // notifications; treat it as a failed scan and retry later.
+        OptionalContext::NoContext(_) => {
+            anyhow::bail!("getProgramAccounts returned no context slot")
+        }
+    };
+    let accounts: Vec<(Pubkey, Account)> = keyed_accounts
+        .into_iter()
+        .filter_map(|entry| Some((entry.pubkey.parse().ok()?, entry.account.decode()?)))
+        .collect();
 
     let tasks = accounts.into_iter().filter_map(|(pubkey, acc)| {
         if acc.owner != PROGRAM_ID {
@@ -82,7 +106,8 @@ pub async fn fetch_and_process_program_accounts(
                     &pubkey,
                     queue,
                     Arc::clone(&bytes),
-                    None,
+                    Some(view_slot),
+                    true,
                 )
                 .await
             })
@@ -99,6 +124,7 @@ pub async fn fetch_and_process_program_accounts(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn process_oracle_queue(
     oracle_client: &Arc<OracleClient>,
     rpc_client: &Arc<RpcClient>,
@@ -107,10 +133,31 @@ pub async fn process_oracle_queue(
     oracle_queue: &Queue,
     account_bytes: Arc<Vec<u8>>,
     notification_slot: Option<u64>,
+    is_snapshot: bool,
 ) {
     if oracle_queue_pda(&oracle_client.keypair.pubkey(), oracle_queue.index).0 == *queue
         && oracle_client.should_process_queue(rpc_client, queue).await
     {
+        // Apply views in per-queue slot order, holding the guard across the
+        // task-map mutations below so a stale view cannot resurrect or cancel
+        // requests. Snapshots lack intra-slot order: require strictly newer.
+        let _view_order_guard = {
+            let mut latest_views = oracle_client.latest_view_slots.write().await;
+            if let Some(view_slot) = notification_slot {
+                let latest = latest_views.entry(queue.to_string()).or_insert(0);
+                let stale = if is_snapshot {
+                    view_slot <= *latest
+                } else {
+                    view_slot < *latest
+                };
+                if stale {
+                    return;
+                }
+                *latest = view_slot;
+            }
+            latest_views
+        };
+
         if oracle_queue.item_count > 0 {
             info!(
                 "Processing queue: {}, with len: {}",
@@ -155,6 +202,17 @@ pub async fn process_oracle_queue(
             let previously_tracked: Vec<[u8; 32]> = inflight_for_queue.keys().cloned().collect();
             for tracked_id in previously_tracked {
                 if !current_ids.contains(&tracked_id) {
+                    // Removal happens strictly after enqueue, so an absence
+                    // from a view no newer than the enqueue slot predates the
+                    // request: skip it so a stale snapshot cannot cancel a
+                    // live fulfillment task.
+                    if let (Some(enqueue_slot), Some(view_slot)) =
+                        (inflight_for_queue.get(&tracked_id), notification_slot)
+                    {
+                        if view_slot <= *enqueue_slot {
+                            continue;
+                        }
+                    }
                     // Cancel any running task for this id
                     if let Some(handle) = tasks_for_queue.remove(&tracked_id) {
                         handle.abort();
@@ -224,6 +282,7 @@ pub async fn process_oracle_queue(
                     ProcessableItem(item)
                         .prepare_transaction(
                             &oracle_client_for_proc,
+                            &rpc_client,
                             &blockhash_cache,
                             &input_seed,
                             &prepared_vrf,
@@ -263,6 +322,7 @@ pub async fn process_oracle_queue(
                             ProcessableItem(item)
                                 .prepare_transaction(
                                     &oracle_client_for_proc,
+                                    &rpc_client,
                                     &blockhash_cache,
                                     &input_seed,
                                     &prepared_vrf,
@@ -333,6 +393,7 @@ pub async fn process_oracle_queue(
                             ProcessableItem(item)
                                 .prepare_transaction(
                                     &oracle_client_for_proc,
+                                    &rpc_client,
                                     &blockhash_cache,
                                     &input_seed,
                                     &prepared_vrf,
@@ -430,6 +491,7 @@ impl ProcessableItem {
     async fn prepare_transaction(
         &self,
         oracle_client: &OracleClient,
+        rpc_client: &RpcClient,
         blockhash_cache: &BlockhashCache,
         vrf_input: &[u8; 32],
         prepared_vrf: &PreparedVrf,
@@ -477,8 +539,21 @@ impl ProcessableItem {
         // Nonce: vary the compute limit so each retry is a distinct
         // transaction under the same cached blockhash.
         let budget = budget + (attempt % 256) as u32;
+        // Escalate the fee roughly every 3s the request stays unlanded; the
+        // cap bounds the total priority spend per attempt for any CU limit.
+        let max_price = MAX_PRIORITY_FEE_LAMPORTS.saturating_mul(1_000_000) / u64::from(budget);
+        let priority_fee =
+            (oracle_client.priority_fee(rpc_client).await << (attempt / 8).min(4)).min(max_price);
+        let mut instructions = vec![ComputeBudgetInstruction::set_compute_unit_limit(budget), ix];
+        if priority_fee > 0 {
+            // Appended after the VRF instruction so its error index stays 1,
+            // which the send loop's error matching relies on.
+            instructions.push(ComputeBudgetInstruction::set_compute_unit_price(
+                priority_fee,
+            ));
+        }
         Transaction::new_signed_with_payer(
-            &[ComputeBudgetInstruction::set_compute_unit_limit(budget), ix],
+            &instructions,
             Some(&oracle_client.keypair.pubkey()),
             &[&oracle_client.keypair],
             blockhash,

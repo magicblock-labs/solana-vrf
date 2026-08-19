@@ -12,7 +12,10 @@ use solana_commitment_config::CommitmentConfig;
 use solana_sdk::{pubkey::Pubkey, signature::Keypair};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::Duration,
 };
 use tokio::sync::{watch, RwLock};
@@ -55,6 +58,9 @@ struct DelegationStatusResponse {
     is_delegated: bool,
 }
 
+const PRIORITY_FEE_MAX_AGE: Duration = Duration::from_secs(10);
+const PRIORITY_FEE_FETCH_TIMEOUT: Duration = Duration::from_millis(500);
+const DEFAULT_PRIORITY_FEE_MICRO_LAMPORTS: u64 = 10_000;
 const EARLY_SEND_DIVISOR: u32 = 20;
 const EARLY_SEND_MAX: Duration = Duration::from_millis(20);
 const NON_ER_EARLY_SEND_BONUS: Duration = Duration::from_millis(400);
@@ -234,6 +240,10 @@ pub struct OracleClient {
     pub skip_preflight: bool,
     pub slot_tracker: SlotTracker,
     delegated_queue_statuses: Arc<RwLock<Option<HashMap<Pubkey, bool>>>>,
+    priority_fee_cache: Arc<RwLock<Option<(u64, Instant)>>>,
+    priority_fee_refresh: Arc<tokio::sync::Mutex<()>>,
+    // Newest view slot processed per queue; older views are discarded.
+    pub latest_view_slots: Arc<RwLock<HashMap<QueueKey, u64>>>,
 }
 
 #[async_trait]
@@ -268,7 +278,68 @@ impl OracleClient {
             skip_preflight,
             slot_tracker: SlotTracker::new(),
             delegated_queue_statuses: Arc::new(RwLock::new(None)),
+            priority_fee_cache: Arc::new(RwLock::new(None)),
+            priority_fee_refresh: Arc::new(tokio::sync::Mutex::new(())),
+            latest_view_slots: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Recommended priority fee in micro-lamports per CU, cached for
+    /// PRIORITY_FEE_MAX_AGE. Zero on ephemeral rollups; falls back to the
+    /// default when the endpoint does not support getPriorityFeeEstimate.
+    pub async fn priority_fee(&self, rpc_client: &RpcClient) -> u64 {
+        if self.delegated_queue_statuses.read().await.is_some() {
+            return 0;
+        }
+        if let Some(fee) = self.cached_priority_fee().await {
+            return fee;
+        }
+        // Serialize refreshes so concurrent tasks share one estimate.
+        let _refresh_guard = self.priority_fee_refresh.lock().await;
+        if let Some(fee) = self.cached_priority_fee().await {
+            return fee;
+        }
+        // Bound the refresh so a slow endpoint cannot delay sends; fall back
+        // to the last known value and retry next window.
+        let fee = match tokio::time::timeout(
+            PRIORITY_FEE_FETCH_TIMEOUT,
+            Self::fetch_priority_fee(rpc_client),
+        )
+        .await
+        {
+            Ok(Ok(fee)) => fee,
+            _ => (*self.priority_fee_cache.read().await)
+                .map(|(fee, _)| fee)
+                .unwrap_or(DEFAULT_PRIORITY_FEE_MICRO_LAMPORTS),
+        };
+        *self.priority_fee_cache.write().await = Some((fee, Instant::now()));
+        fee
+    }
+
+    async fn cached_priority_fee(&self) -> Option<u64> {
+        (*self.priority_fee_cache.read().await)
+            .filter(|(_, fetched_at)| fetched_at.elapsed() < PRIORITY_FEE_MAX_AGE)
+            .map(|(fee, _)| fee)
+    }
+
+    async fn fetch_priority_fee(rpc_client: &RpcClient) -> Result<u64, ClientError> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct PriorityFeeEstimate {
+            priority_fee_estimate: f64,
+        }
+        rpc_client
+            .send::<PriorityFeeEstimate>(
+                RpcRequest::Custom {
+                    method: "getPriorityFeeEstimate",
+                },
+                json!([{
+                    "accountKeys": [PROGRAM_ID.to_string()],
+                    "options": { "recommended": true }
+                }]),
+            )
+            .await
+            .map(|estimate| estimate.priority_fee_estimate as u64)
     }
 
     pub async fn run(self: Arc<Self>) -> Result<()> {
@@ -292,16 +363,24 @@ impl OracleClient {
         )
         .await?;
 
-        // Periodically refresh and process program accounts every 30 seconds
+        // Serialize full-program scans: the periodic and reconnect paths
+        // share one flight so a slow RPC cannot accumulate overlapping scans.
+        let scan_lock = Arc::new(tokio::sync::Mutex::new(()));
+        let scan_queued = Arc::new(AtomicBool::new(false));
+
+        // Periodically refresh and process program accounts every 5 seconds
         {
             let self_clone = Arc::clone(&self);
             let rpc_client_clone = Arc::clone(&rpc_client);
             let blockhash_cache_clone = Arc::clone(&blockhash_cache);
+            let scan_lock_clone = Arc::clone(&scan_lock);
             tokio::spawn(async move {
-                let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 interval.tick().await;
                 loop {
                     interval.tick().await;
+                    let _scan_guard = scan_lock_clone.lock().await;
                     if let Err(err) = fetch_and_process_program_accounts(
                         &self_clone,
                         &rpc_client_clone,
@@ -320,6 +399,35 @@ impl OracleClient {
             match self.create_update_source(&blockhash_cache).await {
                 Ok(mut source) => {
                     info!("Update source connected successfully");
+                    // Requests that landed while the source was down produce no
+                    // account notification: snapshot on every (re)connect,
+                    // spawned so a slow scan cannot stall stream consumption
+                    // and queued behind any scan already in flight (whose bank
+                    // may predate the gap). At most one snapshot waits: a
+                    // pending one covers every later gap as well.
+                    if !scan_queued.swap(true, Ordering::SeqCst) {
+                        let scan_lock = Arc::clone(&scan_lock);
+                        let scan_queued = Arc::clone(&scan_queued);
+                        let self_clone = Arc::clone(&self);
+                        let rpc_client_clone = Arc::clone(&rpc_client);
+                        let blockhash_cache_clone = Arc::clone(&blockhash_cache);
+                        tokio::spawn(async move {
+                            let _scan_guard = scan_lock.lock_owned().await;
+                            scan_queued.store(false, Ordering::SeqCst);
+                            if let Err(err) = fetch_and_process_program_accounts(
+                                &self_clone,
+                                &rpc_client_clone,
+                                &blockhash_cache_clone,
+                                queue_memcmp_filter(),
+                            )
+                            .await
+                            {
+                                error!(
+                                    "Post-connect fetch_and_process_program_accounts failed: {err:?}"
+                                );
+                            }
+                        });
+                    }
                     while let Some((pubkey, queue, bytes, notification_slot)) = source.next().await
                     {
                         let bytes = Arc::new(bytes);
@@ -331,6 +439,7 @@ impl OracleClient {
                             &queue,
                             bytes,
                             Some(notification_slot),
+                            false,
                         )
                         .await;
                     }
