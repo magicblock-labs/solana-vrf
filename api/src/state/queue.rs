@@ -2,7 +2,6 @@ use crate::prelude::{AccountDiscriminator, EphemeralVrfError};
 use crate::steel::{AccountMeta, Pod, ProgramError, Pubkey, Zeroable};
 use borsh::{BorshDeserialize, BorshSerialize};
 use core::mem::{size_of, size_of_val};
-use core::ptr;
 
 const MAX_CALLBACK_ACCOUNTS: usize = 25;
 
@@ -64,7 +63,7 @@ impl QueueItem {
 
         let bytes = &acc[start..end];
 
-        unsafe { core::slice::from_raw_parts(bytes.as_ptr() as *const CompactAccountMeta, count) }
+        bytemuck::cast_slice(bytes)
     }
 
     pub fn callback_args<'a>(&self, acc: &'a [u8]) -> &'a [u8] {
@@ -178,18 +177,12 @@ impl<'a> QueueAccount<'a> {
 
     #[inline]
     fn read_item_unaligned(bytes: &[u8]) -> QueueItem {
-        unsafe { ptr::read_unaligned(bytes.as_ptr() as *const QueueItem) }
+        bytemuck::pod_read_unaligned(bytes)
     }
 
     #[inline]
     fn write_item_unaligned(dst: &mut [u8], item: &QueueItem) {
-        let src = unsafe {
-            core::slice::from_raw_parts(
-                item as *const QueueItem as *const u8,
-                size_of::<QueueItem>(),
-            )
-        };
-        dst.copy_from_slice(src);
+        dst.copy_from_slice(bytemuck::bytes_of(item));
     }
 
     #[inline]
@@ -261,8 +254,7 @@ impl<'a> QueueAccount<'a> {
 
         self.acc[disc_off..metas_off].copy_from_slice(discriminator);
 
-        let metas_bytes =
-            unsafe { core::slice::from_raw_parts(metas.as_ptr() as *const u8, metas_bytes_len) };
+        let metas_bytes: &[u8] = bytemuck::cast_slice(metas);
         self.acc[metas_off..args_off].copy_from_slice(metas_bytes);
         self.acc[args_off..args_end].copy_from_slice(args);
 
@@ -661,6 +653,70 @@ mod tests {
 
         let tail = queue.get_item_by_index(2).unwrap();
         assert_eq!(tail.id, [2; 32]);
+    }
+
+    #[test]
+    fn bytemuck_casts_match_previous_unsafe_forms() {
+        let item = QueueItem {
+            slot: 42,
+            callback_discriminator_offset: 1,
+            metas_offset: 2,
+            args_offset: 3,
+            callback_discriminator_len: 4,
+            metas_len: 5,
+            args_len: 6,
+            priority_request: 1,
+            used: 1,
+            ..test_item(9)
+        };
+        let metas = [
+            CompactAccountMeta {
+                pubkey: [2; 32],
+                is_writable: 1,
+            },
+            CompactAccountMeta {
+                pubkey: [3; 32],
+                is_writable: 0,
+            },
+        ];
+
+        // Writing an item: bytes_of vs raw parts over the struct
+        let safe_item_bytes = bytemuck::bytes_of(&item);
+        let unsafe_item_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &item as *const QueueItem as *const u8,
+                size_of::<QueueItem>(),
+            )
+        };
+        assert_eq!(safe_item_bytes, unsafe_item_bytes);
+
+        // Reading an item back: pod_read_unaligned vs ptr::read_unaligned (offset by 1 to
+        // exercise the unaligned path)
+        let mut buf = vec![0u8; 1 + size_of::<QueueItem>()];
+        buf[1..].copy_from_slice(safe_item_bytes);
+        let safe_read: QueueItem = bytemuck::pod_read_unaligned(&buf[1..]);
+        let unsafe_read =
+            unsafe { core::ptr::read_unaligned(buf[1..].as_ptr() as *const QueueItem) };
+        assert_eq!(safe_read, unsafe_read);
+        assert_eq!(safe_read, item);
+
+        // Metas as bytes: cast_slice vs raw parts over the slice
+        let safe_metas_bytes: &[u8] = bytemuck::cast_slice(&metas);
+        let unsafe_metas_bytes = unsafe {
+            core::slice::from_raw_parts(metas.as_ptr() as *const u8, size_of_val(&metas))
+        };
+        assert_eq!(safe_metas_bytes, unsafe_metas_bytes);
+
+        // Bytes as metas: cast_slice vs raw parts back to the typed slice
+        let safe_typed: &[CompactAccountMeta] = bytemuck::cast_slice(safe_metas_bytes);
+        let unsafe_typed = unsafe {
+            core::slice::from_raw_parts(
+                safe_metas_bytes.as_ptr() as *const CompactAccountMeta,
+                metas.len(),
+            )
+        };
+        assert!(safe_typed == unsafe_typed);
+        assert!(safe_typed == metas);
     }
 
     #[test]
