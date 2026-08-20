@@ -14,8 +14,8 @@ use solana_program::msg;
 /// 0. `[signer]` signer - Must be the admin
 /// 1. `[writable]` oracles_info - PDA that stores the list of oracle identities
 /// 2. `[writable]` oracle_data_info - PDA that stores the oracle data
-/// 2. `[]` program data account - Used to read the program's upgrade authority
-/// 3. `[]` system_program - System program for account creation/closing
+/// 3. `[]` program data account - Used to read the program's upgrade authority
+/// 4. `[]` system_program - System program for account creation/closing
 ///
 /// Requirements:
 ///

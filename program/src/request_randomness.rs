@@ -11,21 +11,23 @@ use solana_system_interface::instruction as system_instruction;
 ///
 /// 0. `[signer]` signer - The account requesting randomness and paying for the transaction
 /// 1. `[signer]` program_identity_info - The identity PDA of the calling program
-/// 2. `[]` oracle_queue_info - The oracle queue account that will store the randomness request
+/// 2. `[writable]` oracle_queue_info - The oracle queue account that will store the randomness request
 /// 3. `[]` system_program_info - The system program
 /// 4. `[]` slothashes_account_info - The SlotHashes sysvar account
 ///
 /// Requirements:
 ///
 /// - The signer must be a valid signer
-/// - The program identity must be a valid signer and derived from the vrf-macro program ID
+/// - The program identity must be a valid signer and derived from the callback program ID
 /// - The oracle queue must be properly initialized
 /// - The request is stored in the oracle queue with a combined hash derived from:
 ///   - caller_seed
 ///   - current slot
 ///   - slot hash
-///   - vrf-macro discriminator
-///   - vrf-macro program ID
+///   - callback discriminator
+///   - callback program ID
+///   - Unix timestamp
+///   - queue insertion position (byte offset after the 8-byte account discriminator)
 ///
 /// 1. Verify the signer
 /// 2. Verify the program identity

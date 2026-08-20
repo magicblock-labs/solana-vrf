@@ -9,7 +9,7 @@ pub enum EphemeralVrfError {
     RandomnessRequestNotFound = 1,
     #[error("Invalid proof")]
     InvalidProof = 2,
-    #[error("Invalid vrf-macro accounts")]
+    #[error("Invalid callback accounts")]
     InvalidCallbackAccounts = 3,
     #[error("Queue is full and cannot accept more items")]
     QueueFull = 4,

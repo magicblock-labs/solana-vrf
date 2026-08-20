@@ -5,7 +5,7 @@ use ephemeral_vrf_api::prelude::*;
 
 /// Process the delegation of an Oracle queue to the delegation program
 ///
-/// This instruction allows an authority to vrf-macro an Oracle queue to the delegation program,
+/// This instruction allows an authority to delegate an Oracle queue to the delegation program,
 /// enabling other programs to interact with the queue through the delegation mechanism.
 ///
 /// Accounts:
@@ -23,15 +23,15 @@ use ephemeral_vrf_api::prelude::*;
 ///
 /// - The authority (account 0) must be a signer.
 /// - The Oracle queue (account 1) must be a valid PDA with seeds [QUEUE, authority.key, index].
-/// - The owner program (account 2) must be the ephemeral VRF program.
-/// - The delegation accounts (3-5) must have the correct PDAs for the delegation program.
+/// - The owner program (account 6) must be the ephemeral VRF program.
+/// - The delegation accounts (2-4) must have the correct PDAs for the delegation program.
 ///
 /// 1. Parse the instruction data and extract arguments (DelegateOracleQueue).
 /// 2. Verify the owner program is the ephemeral VRF program.
 /// 3. Set up the delegation accounts structure.
 /// 4. Create the PDA seeds for the Oracle queue.
 /// 5. Configure the delegation parameters.
-/// 6. Call the delegation program to vrf-macro the Oracle queue account.
+/// 6. Call the delegation program to delegate the Oracle queue account.
 pub fn process_delegate_oracle_queue(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = DelegateOracleQueue::try_from_bytes(data)?;
 

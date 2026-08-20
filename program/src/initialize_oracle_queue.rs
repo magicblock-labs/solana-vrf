@@ -17,14 +17,14 @@ const MAX_EXTRA_BYTES: usize = 10_240;
 /// Accounts:
 ///
 /// 0; `[signer]` The payer of the transaction fees
-/// 1; `[]`       The Oracle public key
+/// 1; `[signer]` The Oracle public key
 /// 2; `[]`       The Oracle data account
-/// 3; `[]`       The Oracle queue account (PDA to be created)
+/// 3; `[writable]` The Oracle queue account (PDA to be created)
 /// 4; `[]`       The System program
 ///
 /// Requirements:
 ///
-/// - The payer (account 0) mus be a signer.
+/// - The payer (account 0) must be a signer.
 /// - The Oracle data account (account 2) must have the correct seeds ([ORACLE_DATA, oracle.key]).
 /// - The Oracle queue account (account 3) must be empty and use the correct seeds ([QUEUE, oracle.key, index]).
 /// - The Oracle must have been registered for at least 200 slots.

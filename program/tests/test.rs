@@ -44,7 +44,7 @@ async fn setup() -> ProgramTestContext {
         },
     );
 
-    // Setup program to test vrf-macro
+    // Setup program to test the callback
     let data = read_file("tests/integration/use-randomness/target/deploy/use_randomness.so");
     program_test.add_account(
         TEST_CALLBACK_PROGRAM,

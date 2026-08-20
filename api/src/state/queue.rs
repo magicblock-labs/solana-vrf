@@ -33,7 +33,7 @@ pub struct QueueItem {
     pub metas_offset: u32,
     pub args_offset: u32,
     pub callback_discriminator_len: u16,
-    pub metas_len: u16, // number of SerializableAccountMeta
+    pub metas_len: u16, // number of CompactAccountMeta
     pub args_len: u16,  // number of bytes
     pub priority_request: u8,
     pub used: u8,          // Flag: 1 = used, 0 = free (logically removed)
