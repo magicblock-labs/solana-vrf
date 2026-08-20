@@ -2,7 +2,6 @@
 // Align instruction discriminators to 8 bytes: [tag, 0,0,0,0,0,0,0]
 // Usage: instruction8!(EnumDiscriminator, StructName);
 // This implements to_bytes() adding the 8-byte header and try_from_bytes() for the struct.
-#[allow(unused_macros)]
 macro_rules! instruction8 {
     ($discriminator_name:ident, $struct_name:ident) => {
         impl $struct_name {

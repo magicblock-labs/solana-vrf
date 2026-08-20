@@ -135,7 +135,7 @@ pub fn process_request_randomness(
         };
 
         // Append the item to the queue (writes discriminator, metas, args into the variable region)
-        let _logical_index = queue_acc.add_item(
+        queue_acc.add_item(
             &base_item,
             &args.callback_discriminator,
             &metas,

@@ -112,21 +112,6 @@ instruction8!(EphemeralVrfInstruction, CloseOracleQueue);
 instruction8!(EphemeralVrfInstruction, PurgeExpiredRequests);
 
 impl RequestRandomness {
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = vec![
-            EphemeralVrfInstruction::RequestHighPriorityRandomness as u8,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-        ];
-        self.serialize(&mut bytes).unwrap();
-        bytes
-    }
-
     pub fn try_from_bytes(mut bytes: &[u8]) -> Result<Self, std::io::Error> {
         Self::deserialize(&mut bytes)
     }
