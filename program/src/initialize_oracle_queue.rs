@@ -129,8 +129,7 @@ pub fn process_initialize_oracle_queue(accounts: &[AccountInfo<'_>], data: &[u8]
         let mut data = oracle_queue_info.data.borrow_mut();
         let disc = AccountDiscriminator::Queue.to_bytes();
         data[..8].copy_from_slice(&disc);
-        let acc_without_disc = &mut data[8..];
-        let qacc = QueueAccount::load(acc_without_disc)?;
+        let qacc = QueueAccount::load(&mut data)?;
         qacc.header.index = args.index;
     }
 

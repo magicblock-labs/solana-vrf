@@ -197,7 +197,7 @@ async fn run_test() {
         .unwrap()
         .unwrap();
     let mut qdata = oracle_queue_account.data.clone();
-    let queue_acc = QueueAccount::load(&mut qdata[8..]).unwrap();
+    let queue_acc = QueueAccount::load(&mut qdata[..]).unwrap();
     assert_eq!(oracle_queue_account.owner, ephemeral_vrf_api::ID);
     assert_eq!(queue_acc.len(), 1);
 
@@ -223,7 +223,7 @@ async fn run_test() {
         .unwrap()
         .unwrap();
     let mut qdata2 = oracle_queue_account.data.clone();
-    let queue_acc2 = QueueAccount::load(&mut qdata2[8..]).unwrap();
+    let queue_acc2 = QueueAccount::load(&mut qdata2[..]).unwrap();
     let vrf_input = queue_acc2.get_item_by_index(0).unwrap().id;
     let (output, (commitment_base_compressed, commitment_hash_compressed, s)) =
         compute_vrf(oracle_vrf_sk, &vrf_input);
@@ -264,7 +264,7 @@ async fn run_test() {
         .unwrap()
         .unwrap();
     let mut qdata = oracle_queue_account.data.clone();
-    let queue_acc = QueueAccount::load(&mut qdata[8..]).unwrap();
+    let queue_acc = QueueAccount::load(&mut qdata[..]).unwrap();
     assert_eq!(oracle_queue_account.owner, ephemeral_vrf_api::ID);
     assert_eq!(queue_acc.len(), 0);
     assert_eq!(
@@ -384,7 +384,7 @@ async fn run_test() {
         .unwrap()
         .unwrap();
     let mut qdata = oracle_queue_account.data.clone();
-    let queue_acc = QueueAccount::load(&mut qdata[8..]).unwrap();
+    let queue_acc = QueueAccount::load(&mut qdata[..]).unwrap();
     assert_eq!(queue_acc.len(), num_requests as usize);
 
     // Increase the slot
@@ -400,7 +400,7 @@ async fn run_test() {
             .unwrap()
             .unwrap();
         let mut qdata2 = oracle_queue_account.data.clone();
-        let queue_acc2 = QueueAccount::load(&mut qdata2[8..]).unwrap();
+        let queue_acc2 = QueueAccount::load(&mut qdata2[..]).unwrap();
         let vrf_input = queue_acc2.get_item_by_index(0).unwrap().id;
 
         // Compute off-chain VRF
@@ -437,7 +437,7 @@ async fn run_test() {
         .unwrap()
         .unwrap();
     let mut qdata = oracle_queue_account.data.clone();
-    let queue_acc = QueueAccount::load(&mut qdata[8..]).unwrap();
+    let queue_acc = QueueAccount::load(&mut qdata[..]).unwrap();
     assert_eq!(queue_acc.len(), 0);
 
     // Close oracle queue.

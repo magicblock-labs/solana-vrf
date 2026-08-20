@@ -82,9 +82,7 @@ pub fn process_request_randomness(
         // Borrow queue account data and load QueueAccount view
         let mut data = oracle_queue_info.try_borrow_mut_data()?;
         Queue::try_from_bytes(&data)?;
-        // Skip 8-byte discriminator
-        let queue_data = &mut data[8..];
-        let mut queue_acc = QueueAccount::load(queue_data)?;
+        let mut queue_acc = QueueAccount::load(&mut data)?;
 
         // Optionally validate discriminator length to 8 bytes max (borsh Vec allows larger, but callbacks typically use 8)
         if args.callback_discriminator.len() > 8 {
