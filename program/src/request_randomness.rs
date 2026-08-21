@@ -84,9 +84,7 @@ pub fn process_request_randomness(
         // Borrow queue account data and load QueueAccount view
         let mut data = oracle_queue_info.try_borrow_mut_data()?;
         Queue::try_from_bytes(&data)?;
-        // Skip 8-byte discriminator
-        let queue_data = &mut data[8..];
-        let mut queue_acc = QueueAccount::load(queue_data)?;
+        let mut queue_acc = QueueAccount::load(&mut data)?;
 
         // Reject new requests on a paused queue so the oracle can drain and close it.
         if queue_acc.header.paused != 0 {

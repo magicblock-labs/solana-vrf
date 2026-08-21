@@ -38,8 +38,7 @@ pub fn process_purge_expired_requests(accounts: &[AccountInfo<'_>], data: &[u8])
     // Borrow queue data and scan/remove expired items using QueueAccount view
     let mut acc_data = oracle_queue_info.try_borrow_mut_data()?;
     Queue::try_from_bytes(&acc_data)?;
-    let queue_data = &mut acc_data[8..];
-    let mut queue_acc = QueueAccount::load(queue_data)?;
+    let mut queue_acc = QueueAccount::load(&mut acc_data)?;
 
     // Scan and remove expired items in a single O(n) pass, so purging stays
     // within the compute budget even when the queue is completely full.

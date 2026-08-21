@@ -175,8 +175,9 @@ pub async fn process_oracle_queue(
         let mut current_ids: HashSet<[u8; 32]> = HashSet::new();
         let mut current_slots_by_id: HashMap<[u8; 32], u64> = HashMap::new();
 
-        // Construct a read-only view over the queue items using a local mutable copy
-        let mut acc_bytes = account_bytes[8..].to_vec(); // strip discriminator
+        // Construct a read-only view over the queue items using a local mutable copy.
+        // Pass the full account data; load() skips the discriminator.
+        let mut acc_bytes = account_bytes[..].to_vec();
         let queue_account = match QueueAccount::load(&mut acc_bytes[..]) {
             Ok(q) => q,
             Err(e) => {

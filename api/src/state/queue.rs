@@ -146,9 +146,21 @@ impl<'a> QueueAccount<'a> {
         Self::align_up(size_of::<Queue>())
     }
 
-    /// Load from an account data slice (without discriminator).
-    /// Caller is responsible for stripping the 8-byte discriminator if present.
+    /// Load from full account data, including the 8-byte discriminator.
+    /// The discriminator is validated and skipped here so call sites pass the
+    /// account data as-is and cannot mis-slice the offset. Validating it also
+    /// makes a caller that mistakenly passes already-stripped data (starting at
+    /// the header) fail loudly instead of silently reading the wrong offset.
     pub fn load(acc: &'a mut [u8]) -> Result<Self, ProgramError> {
+        if acc.len() < 8 {
+            return Err(ProgramError::InvalidAccountData);
+        }
+        if AccountDiscriminator::Queue.to_bytes() != acc[..8] {
+            return Err(ProgramError::InvalidAccountData);
+        }
+        // Skip the 8-byte account discriminator.
+        let (_discriminator, acc) = acc.split_at_mut(8);
+
         let header_size = size_of::<Queue>();
         if acc.len() < header_size {
             return Err(ProgramError::InvalidAccountData);
@@ -564,7 +576,9 @@ mod tests {
         let span = QueueAccount::align_up(
             size_of::<QueueItem>() + discriminator.len() + size_of_val(&metas) + args.len(),
         );
-        let mut data = vec![0u8; QueueAccount::items_start() + (span * 4)];
+        // 8 leading bytes for the account discriminator, which load() validates and skips.
+        let mut data = vec![0u8; 8 + QueueAccount::items_start() + (span * 4)];
+        data[..8].copy_from_slice(&AccountDiscriminator::Queue.to_bytes());
         let mut queue = QueueAccount::load(&mut data).unwrap();
 
         queue
@@ -694,7 +708,9 @@ mod tests {
             pubkey: [2; 32],
             is_writable: 1,
         }; MAX_CALLBACK_ACCOUNTS];
-        let mut data = vec![0u8; 2048];
+        // 8 leading bytes for the account discriminator, which load() validates and skips.
+        let mut data = vec![0u8; 8 + 2048];
+        data[..8].copy_from_slice(&AccountDiscriminator::Queue.to_bytes());
         let mut queue = QueueAccount::load(&mut data).unwrap();
 
         queue
@@ -715,7 +731,8 @@ mod tests {
     fn remove_items_matching_purges_full_mainnet_size_queue() {
         // Worst case on mainnet: 30,000-byte account (minus discriminator)
         // filled with minimal 96-byte items = 312 requests.
-        let mut data = vec![0u8; 30_000 - 8];
+        let mut data = vec![0u8; 30_000];
+        data[..8].copy_from_slice(&AccountDiscriminator::Queue.to_bytes());
         let mut queue = QueueAccount::load(&mut data).unwrap();
 
         let mut added = 0usize;
@@ -745,7 +762,8 @@ mod tests {
         let span = QueueAccount::align_up(
             size_of::<QueueItem>() + discriminator.len() + size_of_val(&metas) + args.len(),
         );
-        let mut data = vec![0u8; QueueAccount::items_start() + span * 6];
+        let mut data = vec![0u8; 8 + QueueAccount::items_start() + span * 6];
+        data[..8].copy_from_slice(&AccountDiscriminator::Queue.to_bytes());
         let mut queue = QueueAccount::load(&mut data).unwrap();
 
         for i in 0..6u8 {
@@ -806,7 +824,8 @@ mod tests {
             is_writable: 1,
         }];
         let args = [3u8; 48];
-        let mut data = vec![0u8; 2048];
+        let mut data = vec![0u8; 8 + 2048];
+        data[..8].copy_from_slice(&AccountDiscriminator::Queue.to_bytes());
         let mut queue = QueueAccount::load(&mut data).unwrap();
 
         for i in 0..3u8 {
