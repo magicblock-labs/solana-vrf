@@ -334,32 +334,31 @@ impl<'a> QueueAccount<'a> {
         }
     }
 
-    pub fn insertion_position(
-        &self,
-        discriminator: &[u8],
-        metas: &[CompactAccountMeta],
-        args: &[u8],
-    ) -> Result<u32, ProgramError> {
-        let layout = Self::item_layout(discriminator, metas, args)?;
-        let scan = self.scan_for_reusable_span(layout.required_span);
-        let cursor = core::cmp::min(self.header.cursor as usize, scan.last_used_end_aligned);
-
-        if let Some(span) = scan.reusable_span {
-            if span.item_pos < cursor {
-                return Ok(span.item_pos as u32);
-            }
-        }
-
-        Ok(Self::align_up(cursor) as u32)
-    }
-
-    /// Append a new item to the queue.
+    /// Append a new item to the queue with a fixed id.
     pub fn add_item(
         &mut self,
         base_item: &QueueItem,
         discriminator: &[u8],
         metas: &[CompactAccountMeta],
         args: &[u8],
+    ) -> Result<usize, ProgramError> {
+        let id = base_item.id;
+        self.add_item_with_id(base_item, discriminator, metas, args, move |_pos| id)
+    }
+
+    /// Append a new item, deriving its id from the byte position it is written to.
+    ///
+    /// `id_from_pos(item_pos)` is invoked exactly once, with the final insertion
+    /// offset, and its result becomes the item's `id`. This lets a caller bind the
+    /// id to the insertion position in a single scan, instead of computing the
+    /// position up front (a first scan) and then writing the item (a second scan).
+    pub fn add_item_with_id(
+        &mut self,
+        base_item: &QueueItem,
+        discriminator: &[u8],
+        metas: &[CompactAccountMeta],
+        args: &[u8],
+        mut id_from_pos: impl FnMut(u32) -> [u8; 32],
     ) -> Result<usize, ProgramError> {
         let layout = Self::item_layout(discriminator, metas, args)?;
         let scan = self.scan_for_reusable_span(layout.required_span);
@@ -370,7 +369,9 @@ impl<'a> QueueAccount<'a> {
 
         if let Some(span) = scan.reusable_span {
             if span.item_pos < self.header.cursor as usize {
-                self.write_item_at(span.item_pos, base_item, discriminator, metas, args)?;
+                let mut item = *base_item;
+                item.id = id_from_pos(span.item_pos as u32);
+                self.write_item_at(span.item_pos, &item, discriminator, metas, args)?;
                 self.header.item_count = self.header.item_count.saturating_add(1);
                 return Ok(span.logical_index);
             }
@@ -394,7 +395,9 @@ impl<'a> QueueAccount<'a> {
 
         // Reserve space for the item so items are contiguous
         let item_pos = self.header.cursor as usize;
-        let end = self.write_item_at(item_pos, base_item, discriminator, metas, args)?;
+        let mut item = *base_item;
+        item.id = id_from_pos(item_pos as u32);
+        let end = self.write_item_at(item_pos, &item, discriminator, metas, args)?;
         self.header.cursor = end as u32;
 
         // Item index is logical position among used items.
@@ -587,26 +590,21 @@ mod tests {
         let removed_pos = removed.callback_discriminator_offset as usize - size_of::<QueueItem>();
         assert_eq!(removed.id, [1; 32]);
         assert_eq!(queue.header.cursor, cursor_after_fill);
-        assert_eq!(
-            queue
-                .insertion_position(&discriminator, &metas, &args)
-                .unwrap() as usize,
-            removed_pos
-        );
 
+        // The next insertion reuses the freed span: the id is derived from the
+        // exact byte position it is written to, which is the removed item's slot.
+        let mut reused_pos = None;
         let reused_index = queue
-            .add_item(&test_item(9), &discriminator, &metas, &args)
+            .add_item_with_id(&test_item(9), &discriminator, &metas, &args, |pos| {
+                reused_pos = Some(pos as usize);
+                [9; 32]
+            })
             .unwrap();
 
+        assert_eq!(reused_pos, Some(removed_pos));
         assert_eq!(reused_index, 1);
         assert_eq!(queue.header.cursor, cursor_after_fill);
         assert_eq!(queue.len(), 3);
-        assert_eq!(
-            queue
-                .insertion_position(&discriminator, &metas, &args)
-                .unwrap(),
-            QueueAccount::align_up(cursor_after_fill as usize) as u32
-        );
 
         let reused = queue.get_item_by_index(1).unwrap();
         assert_eq!(reused.id, [9; 32]);
@@ -616,6 +614,20 @@ mod tests {
 
         let tail = queue.get_item_by_index(2).unwrap();
         assert_eq!(tail.id, [2; 32]);
+
+        // With no holes left, the next item appends past the last used item.
+        let mut appended_pos = None;
+        let appended_index = queue
+            .add_item_with_id(&test_item(11), &discriminator, &metas, &args, |pos| {
+                appended_pos = Some(pos as usize);
+                [11; 32]
+            })
+            .unwrap();
+        assert_eq!(appended_index, 3);
+        assert_eq!(
+            appended_pos,
+            Some(QueueAccount::align_up(cursor_after_fill as usize))
+        );
     }
 
     #[test]

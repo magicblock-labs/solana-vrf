@@ -104,29 +104,13 @@ pub fn process_request_randomness(
             .map(|ca| (*ca).into())
             .collect::<Vec<CompactAccountMeta>>();
 
-        // Compute a combined hash that includes the actual queue insertion position.
-        let idx = queue_acc.insertion_position(
-            &args.callback_discriminator,
-            &metas,
-            &args.callback_args,
-        )?;
-        let combined_hash = hashv(&[
-            &args.caller_seed,
-            &slot.to_le_bytes(),
-            &slothash,
-            &args.callback_discriminator,
-            &args.callback_program_id.to_bytes(),
-            &time.to_le_bytes(),
-            &idx.to_le_bytes(),
-        ]);
-
-        // Log to simplify gathering all the information needed to recreate the combined_hash.
-        msg!("Idx: {}", idx);
-
-        // Build the base item; variable-length parts are appended by add_item()
+        // Build the base item; its id is a combined hash that includes the actual
+        // queue insertion position. That position is only known once the item is
+        // placed, so the id is derived inside add_item_with_id during the single
+        // insertion scan, rather than pre-computed here with a separate scan.
         let base_item = QueueItem {
             slot,
-            id: combined_hash.to_bytes(),
+            id: [0u8; 32],
             callback_program_id: args.callback_program_id.to_bytes(),
             callback_discriminator_offset: 0,
             metas_offset: 0,
@@ -141,12 +125,27 @@ pub fn process_request_randomness(
             _padding: [0u8; 2],
         };
 
-        // Append the item to the queue (writes discriminator, metas, args into the variable region)
-        let _logical_index = queue_acc.add_item(
+        // Append the item to the queue (writes discriminator, metas, args into the
+        // variable region) and bind its id to the chosen insertion position.
+        let _logical_index = queue_acc.add_item_with_id(
             &base_item,
             &args.callback_discriminator,
             &metas,
             &args.callback_args,
+            |idx| {
+                // Log the position so the combined hash can be recreated off-chain.
+                msg!("Idx: {}", idx);
+                hashv(&[
+                    &args.caller_seed,
+                    &slot.to_le_bytes(),
+                    &slothash,
+                    &args.callback_discriminator,
+                    &args.callback_program_id.to_bytes(),
+                    &time.to_le_bytes(),
+                    &idx.to_le_bytes(),
+                ])
+                .to_bytes()
+            },
         )?;
     }
 
