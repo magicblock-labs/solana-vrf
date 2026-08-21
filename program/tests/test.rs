@@ -142,10 +142,6 @@ async fn run_test() {
         oracle_vrf_pk.compress().to_bytes()
     );
 
-    // Advance to current slot + 200
-    let current_slot = banks.get_sysvar::<Clock>().await.unwrap().slot;
-    context.warp_to_slot(current_slot + 200).unwrap();
-
     // Submit init oracle queue transaction.
     let target_size = 50_000u32;
     let ixs = initialize_oracle_queue(

@@ -1,5 +1,4 @@
 use ephemeral_vrf_api::loaders::is_empty_or_zeroed;
-use ephemeral_vrf_api::prelude::EphemeralVrfError::Unauthorized;
 use ephemeral_vrf_api::prelude::*;
 use solana_program::msg;
 const MAX_EXTRA_BYTES: usize = 10_240;
@@ -27,12 +26,10 @@ const MAX_EXTRA_BYTES: usize = 10_240;
 /// - The payer (account 0) mus be a signer.
 /// - The Oracle data account (account 2) must have the correct seeds ([ORACLE_DATA, oracle.key]).
 /// - The Oracle queue account (account 3) must be empty and use the correct seeds ([QUEUE, oracle.key, index]).
-/// - The Oracle must have been registered for at least 200 slots.
 ///
 /// 1. Parse the instruction data and extract arguments (InitializeOracleQueue).
-/// 2. Confirm the Oracle is authorized (enough time has passed since registration).
-/// 3. Create the Oracle queue PDA.
-/// 4. Write the default QueueAccount data to the new PDA.
+/// 2. Create the Oracle queue PDA.
+/// 3. Write the default QueueAccount data to the new PDA.
 pub fn process_initialize_oracle_queue(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     // Parse args
     let args = InitializeOracleQueue::try_from_bytes(data)?;
@@ -57,25 +54,6 @@ pub fn process_initialize_oracle_queue(accounts: &[AccountInfo<'_>], data: &[u8]
         &ephemeral_vrf_api::ID,
     )?;
     is_empty_or_zeroed(oracle_queue_info)?;
-
-    let oracle_registration_slot = {
-        let oracle_data = oracle_data_info.as_account::<Oracle>(&ephemeral_vrf_api::ID)?;
-        oracle_data.registration_slot
-    };
-
-    // Check slot timing
-    let current_slot = Clock::get()?.slot;
-
-    let slots_since_registration = current_slot.saturating_sub(oracle_registration_slot);
-
-    if slots_since_registration < 200 {
-        log(format!(
-            "Oracle {} not yet authorized – wait {} more slots",
-            oracle_info.key,
-            200 - slots_since_registration
-        ));
-        return Err(Unauthorized.into());
-    }
 
     // PDA creation or reallocation
     let seeds: &[&[u8]] = &[QUEUE, oracle_key_ref, &[args.index]];
