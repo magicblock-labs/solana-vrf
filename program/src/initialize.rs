@@ -32,7 +32,6 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
 
     create_pda(
         oracles_info,
-        &ephemeral_vrf_api::ID,
         oracles_bytes.len(),
         &[ORACLES],
         oracles_pda().1,

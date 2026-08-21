@@ -147,13 +147,14 @@ struct QueueItemLayout {
 
 impl<'a> QueueAccount<'a> {
     #[inline]
-    fn align_up(x: usize, align: usize) -> usize {
+    fn align_up(x: usize) -> usize {
+        let align = core::mem::align_of::<QueueItem>();
         (x + align - 1) & !(align - 1)
     }
 
     #[inline]
     fn items_start() -> usize {
-        Self::align_up(size_of::<Queue>(), core::mem::align_of::<QueueItem>())
+        Self::align_up(size_of::<Queue>())
     }
 
     /// Load from an account data slice (without discriminator).
@@ -197,20 +198,19 @@ impl<'a> QueueAccount<'a> {
     }
 
     #[inline]
-    fn item_next(cursor: usize, item: &QueueItem, align: usize) -> usize {
+    fn item_next(cursor: usize, item: &QueueItem) -> usize {
         let metas_bytes = (item.metas_len as usize) * size_of::<CompactAccountMeta>();
         let item_end = cursor
             + size_of::<QueueItem>()
             + (item.callback_discriminator_len as usize)
             + metas_bytes
             + (item.args_len as usize);
-        Self::align_up(item_end, align)
+        Self::align_up(item_end)
     }
 
     fn scan_for_reusable_span(&self, required_span: usize) -> QueueScan {
         let mut cursor = Self::items_start();
         let end = core::cmp::min(self.acc.len(), self.header.cursor as usize);
-        let align = core::mem::align_of::<QueueItem>();
         let item_size = size_of::<QueueItem>();
         let mut last_used_end_aligned = Self::items_start();
         let mut current_index = 0usize;
@@ -219,7 +219,7 @@ impl<'a> QueueAccount<'a> {
         while cursor + item_size <= end {
             let bytes = &self.acc[cursor..cursor + item_size];
             let item = Self::read_item_unaligned(bytes);
-            let next = Self::item_next(cursor, &item, align);
+            let next = Self::item_next(cursor, &item);
 
             if next <= cursor {
                 break;
@@ -301,7 +301,7 @@ impl<'a> QueueAccount<'a> {
 
         Ok(QueueItemLayout {
             total_needed,
-            required_span: Self::align_up(total_needed, core::mem::align_of::<QueueItem>()),
+            required_span: Self::align_up(total_needed),
         })
     }
 
@@ -310,7 +310,6 @@ impl<'a> QueueAccount<'a> {
     fn trim_trailing_holes(&mut self) {
         let mut cursor = Self::items_start();
         let end = core::cmp::min(self.acc.len(), self.header.cursor as usize);
-        let align = core::mem::align_of::<QueueItem>();
 
         // Default to empty queue start; if we see used items we’ll update this
         let mut last_used_end_aligned = Self::items_start();
@@ -319,7 +318,7 @@ impl<'a> QueueAccount<'a> {
             let bytes = &self.acc[cursor..cursor + size_of::<QueueItem>()];
             let item = Self::read_item_unaligned(bytes);
 
-            let next = Self::item_next(cursor, &item, align);
+            let next = Self::item_next(cursor, &item);
 
             if item.used == 1 {
                 last_used_end_aligned = next;
@@ -355,7 +354,7 @@ impl<'a> QueueAccount<'a> {
             }
         }
 
-        Ok(Self::align_up(cursor, core::mem::align_of::<QueueItem>()) as u32)
+        Ok(Self::align_up(cursor) as u32)
     }
 
     /// Append a new item to the queue.
@@ -367,7 +366,6 @@ impl<'a> QueueAccount<'a> {
         args: &[u8],
     ) -> Result<usize, ProgramError> {
         let layout = Self::item_layout(discriminator, metas, args)?;
-        let items_align = core::mem::align_of::<QueueItem>();
         let scan = self.scan_for_reusable_span(layout.required_span);
 
         if (scan.last_used_end_aligned as u32) < self.header.cursor {
@@ -383,13 +381,13 @@ impl<'a> QueueAccount<'a> {
         }
 
         // Ensure we have enough room in the account before mutating any state
-        let aligned = Self::align_up(self.header.cursor as usize, items_align);
+        let aligned = Self::align_up(self.header.cursor as usize);
         if aligned.saturating_add(layout.total_needed) > self.acc.len() {
             return Err(ProgramError::AccountDataTooSmall);
         }
 
         // Ensure items area starts at aligned offset; cursor may have been advanced already
-        let aligned = Self::align_up(self.header.cursor as usize, items_align);
+        let aligned = Self::align_up(self.header.cursor as usize);
         if aligned != self.header.cursor as usize {
             let start = self.header.cursor as usize;
             let end = aligned;
@@ -413,7 +411,6 @@ impl<'a> QueueAccount<'a> {
     pub fn iter_items(&self) -> impl Iterator<Item = QueueItem> + '_ {
         let mut cursor = Self::items_start();
         let end = core::cmp::min(self.acc.len(), self.header.cursor as usize);
-        let align = core::mem::align_of::<QueueItem>();
 
         let mut out = Vec::new();
 
@@ -425,7 +422,7 @@ impl<'a> QueueAccount<'a> {
                 out.push(item);
             }
 
-            let next = Self::item_next(cursor, &item, align);
+            let next = Self::item_next(cursor, &item);
 
             // Prevent infinite loop in case of corrupted lengths
             if next <= cursor {
@@ -443,7 +440,6 @@ impl<'a> QueueAccount<'a> {
 
         let mut cursor = Self::items_start();
         let end = core::cmp::min(self.acc.len(), self.header.cursor as usize);
-        let align = core::mem::align_of::<QueueItem>();
 
         while cursor + size_of::<QueueItem>() <= end {
             let bytes = &self.acc[cursor..cursor + size_of::<QueueItem>()];
@@ -456,7 +452,7 @@ impl<'a> QueueAccount<'a> {
                 current += 1;
             }
 
-            let next = Self::item_next(cursor, &item, align);
+            let next = Self::item_next(cursor, &item);
             if next <= cursor {
                 break;
             }
@@ -472,7 +468,6 @@ impl<'a> QueueAccount<'a> {
 
         let mut cursor = Self::items_start();
         let end = core::cmp::min(self.acc.len(), self.header.cursor as usize);
-        let align = core::mem::align_of::<QueueItem>();
 
         while cursor + size_of::<QueueItem>() <= end {
             let bytes = &mut self.acc[cursor..cursor + size_of::<QueueItem>()];
@@ -493,7 +488,7 @@ impl<'a> QueueAccount<'a> {
                 current += 1;
             }
 
-            let next = Self::item_next(cursor, &item, align);
+            let next = Self::item_next(cursor, &item);
             if next <= cursor {
                 break;
             }
@@ -509,7 +504,6 @@ impl<'a> QueueAccount<'a> {
 
         let mut cursor = Self::items_start();
         let end = core::cmp::min(self.acc.len(), self.header.cursor as usize);
-        let align = core::mem::align_of::<QueueItem>();
 
         while cursor + size_of::<QueueItem>() <= end {
             let bytes = &self.acc[cursor..cursor + size_of::<QueueItem>()];
@@ -522,7 +516,7 @@ impl<'a> QueueAccount<'a> {
                 current += 1;
             }
 
-            let next = Self::item_next(cursor, &item, align);
+            let next = Self::item_next(cursor, &item);
             if next <= cursor {
                 break;
             }
@@ -613,7 +607,6 @@ mod tests {
         let args = [3u8; 48];
         let span = QueueAccount::align_up(
             size_of::<QueueItem>() + discriminator.len() + size_of_val(&metas) + args.len(),
-            core::mem::align_of::<QueueItem>(),
         );
         let mut data = vec![0u8; QueueAccount::items_start() + (span * 4)];
         let mut queue = QueueAccount::load(&mut data).unwrap();
@@ -651,10 +644,7 @@ mod tests {
             queue
                 .insertion_position(&discriminator, &metas, &args)
                 .unwrap(),
-            QueueAccount::align_up(
-                cursor_after_fill as usize,
-                core::mem::align_of::<QueueItem>()
-            ) as u32
+            QueueAccount::align_up(cursor_after_fill as usize) as u32
         );
 
         let reused = queue.get_item_by_index(1).unwrap();
