@@ -1,7 +1,7 @@
 use crate::prelude::*;
 use crate::steel::*;
 use crate::ID;
-use ephemeral_rollups_sdk::consts::{DELEGATION_PROGRAM_ID, MAGIC_CONTEXT_ID, MAGIC_PROGRAM_ID};
+use ephemeral_rollups_sdk::consts::DELEGATION_PROGRAM_ID;
 use ephemeral_rollups_sdk::pda::{
     delegate_buffer_pda_from_delegated_account_and_owner_program,
     delegation_metadata_pda_from_delegated_account, delegation_record_pda_from_delegated_account,
@@ -211,19 +211,6 @@ pub fn delegate_oracle_queue(signer: Pubkey, queue: Pubkey, index: u8) -> Instru
             AccountMeta::new_readonly(system_program::ID, false),
         ],
         data: DelegateOracleQueue { index }.to_bytes(),
-    }
-}
-
-pub fn undelegate_oracle_queue(signer: Pubkey, queue: Pubkey, index: u8) -> Instruction {
-    Instruction {
-        program_id: crate::ID,
-        accounts: vec![
-            AccountMeta::new(signer, true),
-            AccountMeta::new(queue, false),
-            AccountMeta::new(MAGIC_CONTEXT_ID, false),
-            AccountMeta::new_readonly(MAGIC_PROGRAM_ID, false),
-        ],
-        data: UndelegateOracleQueue { index }.to_bytes(),
     }
 }
 

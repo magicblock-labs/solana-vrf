@@ -74,13 +74,6 @@ enum Commands {
         queue: String,
     },
 
-    /// Undelegate an oracle queue
-    UndelegateOracleQueue {
-        /// Queue pubkey
-        #[arg(short, long)]
-        queue: String,
-    },
-
     /// Close an oracle queue
     CloseOracleQueue {
         /// Queue pubkey
@@ -155,27 +148,6 @@ async fn main() -> Result<()> {
                 queue, queue_struct.index
             );
             vec![delegate_oracle_queue(
-                signer.pubkey(),
-                queue,
-                queue_struct.index,
-            )]
-        }
-        Commands::UndelegateOracleQueue { queue } => {
-            let queue = Pubkey::from_str(queue)?;
-            let queue_account = match rpc_client.get_account(&queue) {
-                Ok(acc) => acc,
-                Err(e) => {
-                    eprintln!("Error: {e}");
-                    rpc_client.request_airdrop(&queue, 1)?;
-                    exit(1);
-                }
-            };
-            let queue_struct = Queue::try_from_bytes(queue_account.data.as_slice())?;
-            println!(
-                "Undelegating oracle queue: {} with index: {}",
-                queue, queue_struct.index
-            );
-            vec![undelegate_oracle_queue(
                 signer.pubkey(),
                 queue,
                 queue_struct.index,

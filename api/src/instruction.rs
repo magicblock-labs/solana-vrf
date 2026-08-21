@@ -13,8 +13,6 @@ pub enum EphemeralVrfInstruction {
     RequestHighPriorityRandomness = 3,
     ProvideRandomness = 4,
     DelegateOracleQueue = 5,
-    UndelegateOracleQueue = 6,
-    ProcessUndelegation = 196,
     CloseOracleQueue = 7,
     RequestRandomness = 8,
     PurgeExpiredRequests = 9,
@@ -62,13 +60,6 @@ pub struct RequestRandomness {
     pub callback_args: Vec<u8>,
 }
 
-pub struct PdaSeeds;
-impl PdaSeeds {
-    pub fn parse(data: &[u8]) -> Result<Vec<Vec<u8>>, ProgramError> {
-        Vec::<Vec<u8>>::try_from_slice(data).map_err(|_| ProgramError::InvalidInstructionData)
-    }
-}
-
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct ProvideRandomness {
@@ -82,12 +73,6 @@ pub struct ProvideRandomness {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct DelegateOracleQueue {
-    pub index: u8,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct UndelegateOracleQueue {
     pub index: u8,
 }
 
@@ -116,7 +101,6 @@ instruction8!(EphemeralVrfInstruction, ModifyOracle);
 instruction8!(EphemeralVrfInstruction, InitializeOracleQueue);
 instruction8!(EphemeralVrfInstruction, ProvideRandomness);
 instruction8!(EphemeralVrfInstruction, DelegateOracleQueue);
-instruction8!(EphemeralVrfInstruction, UndelegateOracleQueue);
 instruction8!(EphemeralVrfInstruction, CloseOracleQueue);
 instruction8!(EphemeralVrfInstruction, PurgeExpiredRequests);
 instruction8!(EphemeralVrfInstruction, SetQueuePaused);
