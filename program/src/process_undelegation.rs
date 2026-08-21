@@ -3,22 +3,21 @@ use ephemeral_vrf_api::prelude::*;
 
 /// Process the undelegation of an Oracle queue from the delegation program
 ///
-/// This instruction is a vrf-macro from the delegation program to complete the undelegation process
+/// This instruction is a callback from the delegation program to complete the undelegation process
 /// for an Oracle queue that was previously delegated. It's called by the delegation program as part
 /// of the undelegation flow.
 ///
 /// Accounts:
 ///
-/// 0. `[signer]` The payer for the transaction
-/// 1. `[writable]` The Oracle queue account being undelegated
-/// 2. `[]` The delegation buffer account
+/// 0. `[writable]` The Oracle queue account being undelegated
+/// 1. `[signer]` The delegation buffer account
+/// 2. `[]` The payer for the transaction
 /// 3. `[]` The system program
 ///
 /// Requirements:
 ///
-/// - The payer (account 0) must be a signer.
-/// - The Oracle queue (account 1) must have been previously delegated to the delegation program.
-/// - The delegation buffer (account 2) must be the correct PDA for this delegation.
+/// - The Oracle queue (account 0) must have been previously delegated to the delegation program.
+/// - The delegation buffer (account 1) must be a signer owned by the delegation program.
 ///
 /// Process:
 /// 1. Load and validate the required accounts.
