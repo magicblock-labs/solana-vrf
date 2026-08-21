@@ -239,6 +239,24 @@ pub fn close_oracle_queue(identity: Pubkey, index: u8) -> Instruction {
     }
 }
 
+/// Pause (or unpause) an oracle queue. A paused queue rejects new randomness
+/// requests, letting the oracle drain and then close it. Oracle-gated: the
+/// oracle identity must sign.
+pub fn set_queue_paused(identity: Pubkey, index: u8, paused: bool) -> Instruction {
+    Instruction {
+        program_id: crate::ID,
+        accounts: vec![
+            AccountMeta::new_readonly(identity, true),
+            AccountMeta::new(oracle_queue_pda(&identity, index).0, false),
+        ],
+        data: SetQueuePaused {
+            index,
+            paused: paused as u8,
+        }
+        .to_bytes(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

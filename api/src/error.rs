@@ -33,6 +33,8 @@ pub enum EphemeralVrfError {
     OracleMustProvideInDifferentSlot = 13,
     #[error("Queue has already been used and can no longer be delegated")]
     QueueAlreadyInUse = 14,
+    #[error("Queue is paused and not accepting new requests")]
+    QueuePaused = 15,
 }
 
 impl From<EphemeralVrfError> for ProgramError {
