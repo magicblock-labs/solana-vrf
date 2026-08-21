@@ -106,21 +106,6 @@ instruction8!(SolanaVrfInstruction, PurgeExpiredRequests);
 instruction8!(SolanaVrfInstruction, SetQueuePaused);
 
 impl RequestRandomness {
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = vec![
-            SolanaVrfInstruction::RequestHighPriorityRandomness as u8,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-        ];
-        self.serialize(&mut bytes).unwrap();
-        bytes
-    }
-
     pub fn try_from_bytes(mut bytes: &[u8]) -> Result<Self, std::io::Error> {
         Self::deserialize(&mut bytes)
     }

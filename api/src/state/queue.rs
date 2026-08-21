@@ -465,7 +465,6 @@ impl<'a> QueueAccount<'a> {
             let mut item = Self::read_item_unaligned(bytes);
             let next = Self::item_next(cursor, &item);
 
-
             if item.used == 1 {
                 if pred(&item) {
                     // Logically remove in place; offsets stay valid.

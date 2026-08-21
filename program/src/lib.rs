@@ -65,9 +65,7 @@ pub fn process_instruction(
             process_request_randomness(accounts, data, false, true)?
         }
         SolanaVrfInstruction::ProvideRandomness => process_provide_randomness(accounts, data)?,
-        SolanaVrfInstruction::DelegateOracleQueue => {
-            process_delegate_oracle_queue(accounts, data)?
-        }
+        SolanaVrfInstruction::DelegateOracleQueue => process_delegate_oracle_queue(accounts, data)?,
         SolanaVrfInstruction::CloseOracleQueue => process_close_oracle_queue(accounts, data)?,
         SolanaVrfInstruction::PurgeExpiredRequests => {
             process_purge_expired_requests(accounts, data)?
