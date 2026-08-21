@@ -50,7 +50,19 @@ pub fn process_delegate_oracle_queue(accounts: &[AccountInfo<'_>], data: &[u8]) 
         .is_writable()?
         .has_owner(&ephemeral_vrf_api::ID)?
         .has_seeds(pda_seeds, &ephemeral_vrf_api::ID)?;
-    Queue::try_from_bytes(&oracle_queue_info.try_borrow_data()?)?;
+
+    // Delegation is a one-time setup step: only allow it for a queue that has
+    // never been used, so a queue already relied upon by mainnet projects can't
+    // be pulled into the rollup. A drained queue is not "unused": removed items
+    // leave non-zero bytes behind, so the variable region is checked too.
+    {
+        let data = oracle_queue_info.try_borrow_data()?;
+        let queue = Queue::try_from_bytes(&data)?;
+        let variable_region_start = 8 + core::mem::size_of::<Queue>();
+        if queue.item_count != 0 || data[variable_region_start..].iter().any(|&b| b != 0) {
+            return Err(EphemeralVrfError::QueueAlreadyInUse.into());
+        }
+    }
 
     // Delegate
     let delegate_accounts = DelegateAccounts {
