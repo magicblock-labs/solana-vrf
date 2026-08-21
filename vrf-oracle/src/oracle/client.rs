@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use ephemeral_vrf_api::prelude::QUEUE_TTL_SECONDS;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use solana_client::{
@@ -67,6 +68,8 @@ const NON_ER_EARLY_SEND_BONUS: Duration = Duration::from_millis(400);
 const NON_ER_MIN_SLOT_DURATION: Duration = Duration::from_millis(200);
 const MIN_SLOT_SAMPLE: Duration = Duration::from_millis(1);
 const MIN_SLOT_SAMPLES: u8 = 3;
+/// Assumed slot duration before the tracker has measured one.
+const NOMINAL_SLOT_DURATION: Duration = Duration::from_millis(500);
 
 #[derive(Clone)]
 pub struct SlotTracker {
@@ -105,6 +108,22 @@ impl SlotTracker {
 
     pub fn current(&self) -> u64 {
         *self.sender.borrow()
+    }
+
+    /// Number of slots that currently approximates `QUEUE_TTL_SECONDS` of
+    /// wall-clock time, using the measured slot duration so it tracks changes
+    /// to Solana's block time. Falls back to a nominal rate until enough
+    /// samples have been collected, so a single noisy measurement can't shrink
+    /// the threshold and cause premature purging.
+    pub fn ttl_slots(&self) -> u64 {
+        let timing = self.timing.lock().unwrap();
+        let slot_duration = if timing.samples >= MIN_SLOT_SAMPLES {
+            timing.slot_duration.unwrap_or(NOMINAL_SLOT_DURATION)
+        } else {
+            NOMINAL_SLOT_DURATION
+        };
+        let slot_ms = slot_duration.as_millis().max(1);
+        (QUEUE_TTL_SECONDS.max(0) as u128 * 1000 / slot_ms) as u64
     }
 
     pub fn update(&self, slot: u64) {

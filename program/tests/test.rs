@@ -293,11 +293,14 @@ async fn run_test() {
     let oracle_queue = Queue::try_from_bytes(&oracle_queue_account.data).unwrap();
     assert_eq!(oracle_queue.len(), 1);
 
-    // Advance slots beyond TTL to make the request expired
+    // Expiry is measured in wall-clock time. Warping slots advances the slot
+    // age, but the warped bank keeps the parent block time, so also push the
+    // Clock timestamp well past the TTL.
     let current_slot = banks.get_sysvar::<Clock>().await.unwrap().slot;
-    context
-        .warp_to_slot(current_slot + QUEUE_TTL_SLOTS + 1)
-        .unwrap();
+    context.warp_to_slot(current_slot + 1_000).unwrap();
+    let mut clock = banks.get_sysvar::<Clock>().await.unwrap();
+    clock.unix_timestamp = clock.epoch_start_timestamp + QUEUE_TTL_SECONDS + 1_000;
+    context.set_sysvar(&clock);
 
     // Purge expired requests
     let purge_ix = purge_expired_requests(oracle_keypair.pubkey(), 0);
