@@ -10,7 +10,8 @@ const MAX_EXTRA_BYTES: usize = 10_240;
 /// This is due to the max allocation size of 10_240 bytes per instruction and the queue possibly
 /// being larger than 10_240 bytes.
 ///
-/// The queue uses zero-copy serialization and can be as big as the max account size on Solana
+/// The queue uses zero-copy serialization and can be as big as
+/// `MAX_QUEUE_ACCOUNT_SIZE` (512 KiB).
 ///
 ///
 /// Accounts:
@@ -60,6 +61,11 @@ pub fn process_initialize_oracle_queue(accounts: &[AccountInfo<'_>], data: &[u8]
     let bump = Pubkey::find_program_address(seeds, &ephemeral_vrf_api::ID).1;
 
     let target_size = args.target_size as usize;
+    // Hard cap: keep every O(n) queue operation (above all the single-pass
+    // purge) well within the per-transaction compute budget.
+    if args.target_size > MAX_QUEUE_ACCOUNT_SIZE {
+        return Err(EphemeralVrfError::QueueSizeTooLarge.into());
+    }
     let current_size = oracle_queue_info.data_len();
 
     let extra_bytes = target_size.saturating_sub(current_size);

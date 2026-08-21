@@ -35,6 +35,8 @@ pub enum EphemeralVrfError {
     QueueAlreadyInUse = 14,
     #[error("Queue is paused and not accepting new requests")]
     QueuePaused = 15,
+    #[error("Queue account size exceeds the maximum allowed")]
+    QueueSizeTooLarge = 16,
 }
 
 impl From<EphemeralVrfError> for ProgramError {

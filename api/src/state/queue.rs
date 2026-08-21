@@ -18,7 +18,11 @@ pub struct Queue {
     pub cursor: u32,
     /// Logical index or shard id of the queue.
     pub index: u8,
-    pub _padding: [u8; 3],
+    /// 1 = paused: the oracle has stopped accepting new requests so the queue
+    /// can be drained and closed. 0 = active. Reuses former padding, so
+    /// existing (zeroed) accounts read as active.
+    pub paused: u8,
+    pub _padding: [u8; 2],
 }
 
 /// Single queue entry. This is written into the variable region and
@@ -436,6 +440,46 @@ impl<'a> QueueAccount<'a> {
         Ok(item)
     }
 
+    /// Remove in a single pass all used items matching `pred`, invoking
+    /// `on_removed` for each removed item. Trailing holes are trimmed once at
+    /// the end. Runs in O(n) regardless of how many items are removed, so the
+    /// purge can never be priced out of the compute budget.
+    pub fn remove_items_matching<P, R>(&mut self, mut pred: P, mut on_removed: R)
+    where
+        P: FnMut(&QueueItem) -> bool,
+        R: FnMut(&QueueItem),
+    {
+        let mut cursor = Self::items_start();
+        let end = core::cmp::min(self.acc.len(), self.header.cursor as usize);
+        let mut last_used_end_aligned = Self::items_start();
+
+        while cursor + size_of::<QueueItem>() <= end {
+            let bytes = &mut self.acc[cursor..cursor + size_of::<QueueItem>()];
+            let mut item = Self::read_item_unaligned(bytes);
+            let next = Self::item_next(cursor, &item);
+
+
+            if item.used == 1 {
+                if pred(&item) {
+                    // Logically remove in place; offsets stay valid.
+                    item.used = 0;
+                    Self::write_item_unaligned(bytes, &item);
+                    self.header.item_count = self.header.item_count.saturating_sub(1);
+                    on_removed(&item);
+                } else {
+                    last_used_end_aligned = next;
+                }
+            }
+
+            cursor = next;
+        }
+
+        // Trim trailing holes once.
+        if (last_used_end_aligned as u32) < self.header.cursor {
+            self.header.cursor = last_used_end_aligned as u32;
+        }
+    }
+
     /// Find first used item by id, returning its logical index and value.
     pub fn find_item_by_id(&self, id: &[u8; 32]) -> Option<(usize, QueueItem)> {
         self.scan_items(|logical_index, _, _, item| {
@@ -597,5 +641,118 @@ mod tests {
         assert!(queue
             .add_item(&test_item(1), &discriminator, &too_many_metas, &args)
             .is_err());
+    }
+
+    #[test]
+    fn remove_items_matching_purges_full_mainnet_size_queue() {
+        // Worst case on mainnet: 30,000-byte account (minus discriminator)
+        // filled with minimal 96-byte items = 312 requests.
+        let mut data = vec![0u8; 30_000 - 8];
+        let mut queue = QueueAccount::load(&mut data).unwrap();
+
+        let mut added = 0usize;
+        while queue.add_item(&test_item(1), &[], &[], &[]).is_ok() {
+            added += 1;
+        }
+        assert_eq!(added, 312);
+        assert_eq!(queue.len(), 312);
+
+        let mut removed = 0usize;
+        queue.remove_items_matching(|_| true, |_| removed += 1);
+
+        assert_eq!(removed, 312);
+        assert_eq!(queue.len(), 0);
+        assert!(queue.is_empty());
+        assert_eq!(queue.header.cursor, QueueAccount::items_start() as u32);
+    }
+
+    #[test]
+    fn remove_items_matching_keeps_survivors_and_trims_trailing_holes() {
+        let discriminator = [1u8; 8];
+        let metas = [CompactAccountMeta {
+            pubkey: [2; 32],
+            is_writable: 1,
+        }];
+        let args = [3u8; 48];
+        let span = QueueAccount::align_up(
+            size_of::<QueueItem>() + discriminator.len() + size_of_val(&metas) + args.len(),
+        );
+        let mut data = vec![0u8; QueueAccount::items_start() + span * 6];
+        let mut queue = QueueAccount::load(&mut data).unwrap();
+
+        for i in 0..6u8 {
+            queue
+                .add_item(&test_item(i), &discriminator, &metas, &args)
+                .unwrap();
+        }
+        let cursor_after_fill = queue.header.cursor;
+
+        // Remove one middle item (id 1) and the trailing items (ids 4, 5).
+        let mut removed_ids = Vec::new();
+        queue.remove_items_matching(
+            |item| item.id[0] == 1 || item.id[0] >= 4,
+            |item| removed_ids.push(item.id[0]),
+        );
+
+        assert_eq!(removed_ids, vec![1, 4, 5]);
+        assert_eq!(queue.len(), 3);
+        // Cursor trimmed to the end of the last surviving item (id 3).
+        assert_eq!(
+            queue.header.cursor as usize,
+            QueueAccount::items_start() + span * 4
+        );
+
+        // Survivors are intact at their logical indices.
+        for (logical, id) in [0u8, 2, 3].iter().enumerate() {
+            let item = queue.get_item_by_index(logical).unwrap();
+            assert_eq!(item.id, [*id; 32]);
+            assert_eq!(item.callback_discriminator(queue.acc), discriminator);
+            assert!(item.account_metas(queue.acc) == metas);
+            assert_eq!(item.callback_args(queue.acc), args);
+        }
+
+        // The middle hole is reusable.
+        let reused_index = queue
+            .add_item(&test_item(9), &discriminator, &metas, &args)
+            .unwrap();
+        assert_eq!(reused_index, 1);
+        assert_eq!(queue.len(), 4);
+        assert_eq!(
+            queue.header.cursor as usize,
+            QueueAccount::items_start() + span * 4
+        );
+
+        // Appending past the survivors extends from the trimmed cursor.
+        let tail_index = queue
+            .add_item(&test_item(10), &discriminator, &metas, &args)
+            .unwrap();
+        assert_eq!(tail_index, 4);
+        assert!(queue.header.cursor <= cursor_after_fill);
+    }
+
+    #[test]
+    fn remove_items_matching_noop_preserves_queue() {
+        let discriminator = [1u8; 8];
+        let metas = [CompactAccountMeta {
+            pubkey: [2; 32],
+            is_writable: 1,
+        }];
+        let args = [3u8; 48];
+        let mut data = vec![0u8; 2048];
+        let mut queue = QueueAccount::load(&mut data).unwrap();
+
+        for i in 0..3u8 {
+            queue
+                .add_item(&test_item(i), &discriminator, &metas, &args)
+                .unwrap();
+        }
+        let cursor_before = queue.header.cursor;
+
+        let mut removed = 0usize;
+        queue.remove_items_matching(|_| false, |_| removed += 1);
+
+        assert_eq!(removed, 0);
+        assert_eq!(queue.len(), 3);
+        assert_eq!(queue.header.cursor, cursor_before);
     }
 }
