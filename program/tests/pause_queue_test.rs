@@ -12,7 +12,7 @@ fn empty_queue(size: usize) -> Vec<u8> {
     let mut data = vec![0u8; size];
     data[..8].copy_from_slice(&AccountDiscriminator::Queue.to_bytes());
     {
-        let mut queue = QueueAccount::load(&mut data[8..]).unwrap();
+        let queue = QueueAccount::load(&mut data).unwrap();
         queue.header.index = 0;
     }
     data
@@ -49,7 +49,7 @@ async fn oracle_can_pause_and_unpause_queue() {
         },
     );
 
-    let mut ctx = program_test.start_with_context().await;
+    let ctx = program_test.start_with_context().await;
     let banks = ctx.banks_client.clone();
 
     // A freshly created queue is active (backward compatible: zeroed = active).

@@ -40,6 +40,23 @@ pub fn process_purge_expired_requests(accounts: &[AccountInfo<'_>], data: &[u8])
     Queue::try_from_bytes(&acc_data)?;
     let mut queue_acc = QueueAccount::load(&mut acc_data)?;
 
+    // Age is measured in wall-clock seconds, derived from the epoch's average
+    // slot duration. The epoch-relative rate (elapsed_secs / elapsed_slots) is
+    // loop-invariant, so compute it once here rather than per item — that keeps
+    // a single-pass purge of a full queue well within the compute budget.
+    //
+    // All values are bounded by a single epoch (elapsed_slots <= slots-per-epoch,
+    // elapsed_secs <= the epoch's wall-clock length), so native u64 arithmetic
+    // cannot overflow — much cheaper on SBF than emulated 128-bit math. The
+    // saturating_mul below is purely defensive. Clamps keep values >= 0/1.
+    let current_slot = clock.slot;
+    let elapsed_slots = current_slot.saturating_sub(epoch_start_slot).max(1);
+    let elapsed_secs = clock
+        .unix_timestamp
+        .saturating_sub(clock.epoch_start_timestamp)
+        .max(0) as u64;
+    let ttl_secs = QUEUE_TTL_SECONDS.max(0) as u64;
+
     // Scan and remove expired items in a single O(n) pass, so purging stays
     // within the compute budget even when the queue is completely full.
     let mut total_cost: u64 = 0;
@@ -47,20 +64,13 @@ pub fn process_purge_expired_requests(accounts: &[AccountInfo<'_>], data: &[u8])
     msg!("Items in the queue: {}", queue_acc.len());
     queue_acc.remove_items_matching(
         |item| {
-            // Age in wall-clock seconds, derived from the epoch's average slot
-            // duration. Computed in i128 to avoid overflow; clamps keep it >= 0.
             // Only age accrued within the current epoch is counted (slot_age is
             // capped at elapsed_slots), so the estimate can never exceed the real
             // time elapsed since the epoch start — a request is never expired
             // before its TTL, even for requests that span an epoch boundary.
-            let elapsed_slots = clock.slot.saturating_sub(epoch_start_slot).max(1) as i128;
-            let elapsed_secs = clock
-                .unix_timestamp
-                .saturating_sub(clock.epoch_start_timestamp)
-                .max(0) as i128;
-            let slot_age = (clock.slot.saturating_sub(item.slot) as i128).min(elapsed_slots);
-            let age_secs = ((slot_age * elapsed_secs) / elapsed_slots) as i64;
-            age_secs > QUEUE_TTL_SECONDS
+            let slot_age = current_slot.saturating_sub(item.slot).min(elapsed_slots);
+            let age_secs = slot_age.saturating_mul(elapsed_secs) / elapsed_slots;
+            age_secs > ttl_secs
         },
         |item| {
             let cost = if item.priority_request == 1 {

@@ -12,7 +12,7 @@ fn queue_with_items(size: usize, slots: &[u64]) -> Vec<u8> {
     let mut data = vec![0u8; size];
     data[..8].copy_from_slice(&AccountDiscriminator::Queue.to_bytes());
     {
-        let mut queue = QueueAccount::load(&mut data[8..]).unwrap();
+        let mut queue = QueueAccount::load(&mut data).unwrap();
         queue.header.index = 0;
         for (i, slot) in slots.iter().enumerate() {
             let item = QueueItem {
@@ -85,7 +85,7 @@ async fn purge_expires_by_wall_clock_time() {
     // Only the fresh request (id 2) survives.
     let acct = banks.get_account(queue_addr).await.unwrap().unwrap();
     let mut data = acct.data.clone();
-    let queue = QueueAccount::load(&mut data[8..]).unwrap();
+    let queue = QueueAccount::load(&mut data).unwrap();
     let ids: Vec<u8> = queue.iter_items().map(|it| it.id[0]).collect();
     assert_eq!(
         ids,

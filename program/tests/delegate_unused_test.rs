@@ -11,7 +11,7 @@ fn used_queue(size: usize) -> Vec<u8> {
     let mut data = vec![0u8; size];
     data[..8].copy_from_slice(&AccountDiscriminator::Queue.to_bytes());
     {
-        let mut queue = QueueAccount::load(&mut data[8..]).unwrap();
+        let mut queue = QueueAccount::load(&mut data).unwrap();
         queue.header.index = 0;
         queue
             .add_item(&QueueItem::default(), &[], &[], &[])
@@ -41,7 +41,7 @@ async fn delegation_rejected_for_used_queue() {
         },
     );
 
-    let mut ctx = program_test.start_with_context().await;
+    let ctx = program_test.start_with_context().await;
     let banks = ctx.banks_client.clone();
 
     let ix = delegate_oracle_queue(authority.pubkey(), queue_addr, 0);

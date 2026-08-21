@@ -35,8 +35,7 @@ pub fn process_set_queue_paused(accounts: &[AccountInfo], data: &[u8]) -> Progra
 
     let mut data = oracle_queue_info.try_borrow_mut_data()?;
     Queue::try_from_bytes(&data)?;
-    let queue_data = &mut data[8..];
-    let queue_acc = QueueAccount::load(queue_data)?;
+    let queue_acc = QueueAccount::load(&mut data)?;
     queue_acc.header.paused = u8::from(args.paused != 0);
 
     Ok(())
