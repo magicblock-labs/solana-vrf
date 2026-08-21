@@ -71,11 +71,14 @@ pub fn process_initialize_oracle_queue(accounts: &[AccountInfo<'_>], data: &[u8]
     let extra_bytes = target_size.saturating_sub(current_size);
 
     if extra_bytes > MAX_EXTRA_BYTES {
+        // The account is not yet owned by the program here, so it is still empty
+        // (current_size == 0) and realloc_size == MAX_EXTRA_BYTES. Use realloc_size
+        // in both branches so the size increment is defined consistently.
         let realloc_size = current_size + MAX_EXTRA_BYTES;
         if oracle_queue_info.owner != &ephemeral_vrf_api::ID {
             create_pda(
                 oracle_queue_info,
-                MAX_EXTRA_BYTES,
+                realloc_size,
                 seeds,
                 bump,
                 system_program,
@@ -117,7 +120,7 @@ pub fn process_initialize_oracle_queue(accounts: &[AccountInfo<'_>], data: &[u8]
 
     // Increment oracle's open queue count
     let mut oracle_data_mut = oracle_data_info.as_account_mut::<Oracle>(&ephemeral_vrf_api::ID)?;
-    oracle_data_mut.open_queue = oracle_data_mut.open_queue.saturating_add(1);
+    oracle_data_mut.open_queues = oracle_data_mut.open_queues.saturating_add(1);
 
     Ok(())
 }

@@ -16,7 +16,7 @@ fn oracle_data_account(
     let oracle = Oracle {
         vrf_pubkey: PodRistrettoPoint([0; 32]),
         registration_slot: 0,
-        open_queue: 0,
+        open_queues: 0,
     };
     let mut data = AccountDiscriminator::Oracle.to_bytes().to_vec();
     data.extend_from_slice(oracle.to_bytes());
@@ -126,7 +126,7 @@ async fn queue_size_is_capped_at_max() {
     let expected = Oracle {
         vrf_pubkey: PodRistrettoPoint([0; 32]),
         registration_slot: 0,
-        open_queue: 1,
+        open_queues: 1,
     };
     assert_eq!(&oracle_account.data[8..], expected.to_bytes());
 }

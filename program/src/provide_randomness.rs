@@ -108,8 +108,8 @@ pub fn process_provide_randomness(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
     let s = &args.scalar;
 
     let removed_item_and_buf = {
-        let mut data = oracle_queue_info.try_borrow_mut_data()?;
-        let mut queue_acc = QueueAccount::load(&mut data)?;
+        let mut raw_data = oracle_queue_info.try_borrow_mut_data()?;
+        let mut queue_acc = QueueAccount::load(&mut raw_data)?;
 
         let (index, _item) = {
             let (index, item) = queue_acc
