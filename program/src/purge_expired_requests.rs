@@ -55,7 +55,6 @@ pub fn process_purge_expired_requests(accounts: &[AccountInfo<'_>], data: &[u8])
         .unix_timestamp
         .saturating_sub(clock.epoch_start_timestamp)
         .max(0) as u64;
-    let ttl_secs = QUEUE_TTL_SECONDS.max(0) as u64;
 
     // Scan and remove expired items in a single O(n) pass, so purging stays
     // within the compute budget even when the queue is completely full.
@@ -70,7 +69,7 @@ pub fn process_purge_expired_requests(accounts: &[AccountInfo<'_>], data: &[u8])
             // before its TTL, even for requests that span an epoch boundary.
             let slot_age = current_slot.saturating_sub(item.slot).min(elapsed_slots);
             let age_secs = slot_age.saturating_mul(elapsed_secs) / elapsed_slots;
-            age_secs > ttl_secs
+            age_secs > QUEUE_TTL_SECONDS
         },
         |item| {
             let cost = if item.priority_request == 1 {

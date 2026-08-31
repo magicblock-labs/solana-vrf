@@ -159,14 +159,14 @@ impl<'a> QueueAccount<'a> {
             return Err(ProgramError::InvalidAccountData);
         }
         // Skip the 8-byte account discriminator.
-        let (_discriminator, acc) = acc.split_at_mut(8);
+        let (_discriminator, body) = acc.split_at_mut(8);
 
         let header_size = size_of::<Queue>();
-        if acc.len() < header_size {
+        if body.len() < header_size {
             return Err(ProgramError::InvalidAccountData);
         }
 
-        let (header_bytes, _rest) = acc.split_at_mut(header_size);
+        let (header_bytes, _rest) = body.split_at_mut(header_size);
         // Validate alignment and size using a safe checked conversion first
         if bytemuck::try_from_bytes_mut::<Queue>(header_bytes).is_err() {
             return Err(ProgramError::InvalidAccountData);
@@ -179,7 +179,7 @@ impl<'a> QueueAccount<'a> {
             header.cursor = Self::items_start() as u32;
         }
 
-        Ok(Self { header, acc })
+        Ok(Self { header, acc: body })
     }
 
     #[inline]
@@ -381,14 +381,14 @@ impl<'a> QueueAccount<'a> {
             }
         }
 
-        // Ensure we have enough room in the account before mutating any state
+        // `aligned` is where the item will start (cursor may have been advanced
+        // already). Ensure we have enough room before mutating any state.
         let aligned = Self::align_up(self.header.cursor as usize);
         if aligned.saturating_add(layout.total_needed) > self.acc.len() {
             return Err(ProgramError::AccountDataTooSmall);
         }
 
-        // Ensure items area starts at aligned offset; cursor may have been advanced already
-        let aligned = Self::align_up(self.header.cursor as usize);
+        // Ensure items area starts at the aligned offset.
         if aligned != self.header.cursor as usize {
             let start = self.header.cursor as usize;
             let end = aligned;

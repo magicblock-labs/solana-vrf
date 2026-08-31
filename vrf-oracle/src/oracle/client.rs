@@ -123,7 +123,7 @@ impl SlotTracker {
             NOMINAL_SLOT_DURATION
         };
         let slot_ms = slot_duration.as_millis().max(1);
-        (QUEUE_TTL_SECONDS.max(0) as u128 * 1000 / slot_ms) as u64
+        (QUEUE_TTL_SECONDS as u128 * 1000 / slot_ms) as u64
     }
 
     pub fn update(&self, slot: u64) {

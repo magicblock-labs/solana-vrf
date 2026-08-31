@@ -16,8 +16,12 @@ use ephemeral_vrf_api::prelude::*;
 /// - The Oracle (account 0) must be a signer.
 /// - The queue (account 1) must be a valid PDA with seeds [QUEUE, oracle.key, index],
 ///   owned by the ephemeral VRF program.
+/// - `paused` must be 0 or 1; any other value is rejected.
 pub fn process_set_queue_paused(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     let args = SetQueuePaused::try_from_bytes(data)?;
+    if args.paused > 1 {
+        return Err(ProgramError::InvalidInstructionData);
+    }
 
     let [oracle_info, oracle_queue_info] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
@@ -36,7 +40,7 @@ pub fn process_set_queue_paused(accounts: &[AccountInfo], data: &[u8]) -> Progra
     let mut data = oracle_queue_info.try_borrow_mut_data()?;
     Queue::try_from_bytes(&data)?;
     let queue_acc = QueueAccount::load(&mut data)?;
-    queue_acc.header.paused = u8::from(args.paused != 0);
+    queue_acc.header.paused = args.paused;
 
     Ok(())
 }

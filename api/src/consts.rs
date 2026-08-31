@@ -22,7 +22,7 @@ pub const VRF_LAMPORTS_COST: u64 = 500000;
 
 /// Requests expire after this many seconds. Measured in wall-clock time so
 /// expiry stays correct if Solana's slot duration changes in the future.
-pub const QUEUE_TTL_SECONDS: i64 = 120;
+pub const QUEUE_TTL_SECONDS: u64 = 120;
 
 /// Hard cap on the oracle queue account size (512 KiB). Keeps every O(n)
 /// queue operation — including the multi-scan request and fulfillment paths —

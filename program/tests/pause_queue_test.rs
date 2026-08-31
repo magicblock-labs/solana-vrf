@@ -90,4 +90,17 @@ async fn oracle_can_pause_and_unpause_queue() {
     );
     assert!(banks.process_transaction(tx).await.is_err());
     assert_eq!(paused_flag(&banks, queue_addr).await, 0);
+
+    // A `paused` value other than 0 or 1 is rejected.
+    let mut ix = set_queue_paused(oracle.pubkey(), 0, true);
+    *ix.data.last_mut().unwrap() = 2; // the trailing byte is the paused flag
+    let bh = banks.get_latest_blockhash().await.unwrap();
+    let tx = Transaction::new_signed_with_payer(
+        &[ix],
+        Some(&ctx.payer.pubkey()),
+        &[&ctx.payer, &oracle],
+        bh,
+    );
+    assert!(banks.process_transaction(tx).await.is_err());
+    assert_eq!(paused_flag(&banks, queue_addr).await, 0);
 }

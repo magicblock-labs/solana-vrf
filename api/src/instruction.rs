@@ -92,7 +92,7 @@ pub struct PurgeExpiredRequests {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SetQueuePaused {
     pub index: u8,
-    /// 1 = pause, 0 = unpause.
+    /// 1 = pause, 0 = unpause; any other value is rejected.
     pub paused: u8,
 }
 

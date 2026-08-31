@@ -299,7 +299,7 @@ async fn run_test() {
     let current_slot = banks.get_sysvar::<Clock>().await.unwrap().slot;
     context.warp_to_slot(current_slot + 1_000).unwrap();
     let mut clock = banks.get_sysvar::<Clock>().await.unwrap();
-    clock.unix_timestamp = clock.epoch_start_timestamp + QUEUE_TTL_SECONDS + 1_000;
+    clock.unix_timestamp = clock.epoch_start_timestamp + QUEUE_TTL_SECONDS as i64 + 1_000;
     context.set_sysvar(&clock);
 
     // Purge expired requests

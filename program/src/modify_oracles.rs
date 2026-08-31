@@ -5,6 +5,7 @@ use ephemeral_vrf_api::prelude::EphemeralVrfError::{
 use ephemeral_vrf_api::prelude::*;
 use ephemeral_vrf_api::verify::is_on_curve;
 use solana_curve25519::ristretto::validate_ristretto;
+use solana_program::msg;
 
 /// Process the modification of oracles (add or remove)
 ///
@@ -61,10 +62,11 @@ pub fn process_modify_oracles(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         .ok_or(Unauthorized)?;
 
     if !signer_info.key.eq(&admin_pubkey) {
-        log(format!(
+        msg!(
             "Signer not authorized, expected: {}, got: {}",
-            admin_pubkey, signer_info.key
-        ));
+            admin_pubkey,
+            signer_info.key
+        );
         return Err(Unauthorized.into());
     }
 
@@ -101,7 +103,7 @@ pub fn process_modify_oracles(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
             oracle_data.open_queues
         };
         if open_queues != 0 {
-            log(format!("Oracle has {} open queues", open_queues));
+            msg!("Oracle has {} open queues", open_queues);
             return Err(QueueNotEmpty.into());
         }
         oracles.oracles.retain(|oracle| oracle.ne(&args.identity));
