@@ -1,6 +1,6 @@
-# EphemeralVrf
+# SolanaVrf
 
-**EphemeralVrf** is a Verifiable Random Function (VRF) implementation for Solana that provides secure, verifiable randomness for decentralized applications.
+**SolanaVrf** is a Verifiable Random Function (VRF) implementation for Solana that provides secure, verifiable randomness for decentralized applications.
 It uses a network of oracles to generate and verify random values on-chain.
 
 **Start here:** read the [MagicBlock Solana VRF docs](https://docs.magicblock.gg/pages/verifiable-randomness-functions-vrfs/introduction/solana-vrf) for the end-to-end integration flow.
