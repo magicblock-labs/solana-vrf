@@ -31,7 +31,7 @@ upgradeable = false
 
 [[test.genesis]]
 address = "Vrf1RNUjXmQGjmQrQLvJHs9SNkvDJEsRVFPkfSQUwGz"
-program = "../../../../target/deploy/ephemeral_vrf_program.so"
+program = "../../../../target/deploy/solana_vrf_program.so"
 upgradeable = false
 
 [test.validator]

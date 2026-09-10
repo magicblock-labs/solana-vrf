@@ -6,11 +6,11 @@
 //! mainnet compute cap (1.4M CU). Before the fix this transaction could
 //! never land; after the fix it must succeed and fully drain the queue.
 
-use ephemeral_vrf_api::prelude::*;
 use solana_compute_budget_interface::ComputeBudgetInstruction;
 use solana_program_test::{processor, ProgramTest};
 use solana_sdk::account::Account;
 use solana_sdk::{signature::Keypair, signer::Signer, transaction::Transaction};
+use solana_vrf_api::prelude::*;
 
 /// Mainnet queue account size (advisory: 29,976 usable bytes after
 /// discriminator + header, i.e. 312 minimal 96-byte requests).
@@ -45,9 +45,9 @@ fn align_up(x: usize, align: usize) -> usize {
 #[tokio::test]
 async fn purge_full_queue_within_mainnet_compute_budget() {
     let mut program_test = ProgramTest::new(
-        "ephemeral_vrf_program",
-        ephemeral_vrf_api::ID,
-        processor!(ephemeral_vrf_program::process_instruction),
+        "solana_vrf_program",
+        solana_vrf_api::ID,
+        processor!(solana_vrf_program::process_instruction),
     );
 
     let oracle_keypair = Keypair::new();
@@ -74,7 +74,7 @@ async fn purge_full_queue_within_mainnet_compute_budget() {
         Account {
             lamports: queue_lamports,
             data: queue_data,
-            owner: ephemeral_vrf_api::ID,
+            owner: solana_vrf_api::ID,
             executable: false,
             rent_epoch: 0,
         },
@@ -160,9 +160,9 @@ async fn purge_full_queue_within_mainnet_compute_budget() {
 #[tokio::test]
 async fn purge_mixed_queue_keeps_live_requests() {
     let mut program_test = ProgramTest::new(
-        "ephemeral_vrf_program",
-        ephemeral_vrf_api::ID,
-        processor!(ephemeral_vrf_program::process_instruction),
+        "solana_vrf_program",
+        solana_vrf_api::ID,
+        processor!(solana_vrf_program::process_instruction),
     );
 
     let oracle_keypair = Keypair::new();
@@ -217,7 +217,7 @@ async fn purge_mixed_queue_keeps_live_requests() {
         &Account {
             lamports: 10_000_000_000,
             data,
-            owner: ephemeral_vrf_api::ID,
+            owner: solana_vrf_api::ID,
             executable: false,
             rent_epoch: 0,
         }
@@ -288,9 +288,9 @@ async fn purge_mixed_queue_keeps_live_requests() {
 #[tokio::test]
 async fn purge_max_size_queue_within_mainnet_compute_budget() {
     let mut program_test = ProgramTest::new(
-        "ephemeral_vrf_program",
-        ephemeral_vrf_api::ID,
-        processor!(ephemeral_vrf_program::process_instruction),
+        "solana_vrf_program",
+        solana_vrf_api::ID,
+        processor!(solana_vrf_program::process_instruction),
     );
 
     let oracle_keypair = Keypair::new();
@@ -314,7 +314,7 @@ async fn purge_max_size_queue_within_mainnet_compute_budget() {
         Account {
             lamports: queue_lamports,
             data: queue_data,
-            owner: ephemeral_vrf_api::ID,
+            owner: solana_vrf_api::ID,
             executable: false,
             rent_epoch: 0,
         },

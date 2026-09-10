@@ -1,15 +1,6 @@
 use crate::blockhash_cache::BlockhashCache;
 use crate::oracle::client::OracleClient;
 use anyhow::Result;
-use ephemeral_vrf::vrf::{compute_vrf, verify_vrf};
-use ephemeral_vrf_api::{
-    prelude::{
-        provide_randomness_with_identity_mode, purge_expired_requests, EphemeralVrfError, Queue,
-        QueueAccount, QueueItem,
-    },
-    state::oracle_queue_pda,
-    ID as PROGRAM_ID,
-};
 use futures_util::future::join_all;
 use futures_util::FutureExt;
 use log::{error, info, trace, warn};
@@ -30,6 +21,15 @@ use solana_sdk::{
     pubkey::Pubkey,
     signature::Signer,
     transaction::{Transaction, TransactionError},
+};
+use solana_vrf::vrf::{compute_vrf, verify_vrf};
+use solana_vrf_api::{
+    prelude::{
+        provide_randomness_with_identity_mode, purge_expired_requests, Queue, QueueAccount,
+        QueueItem, SolanaVrfError,
+    },
+    state::oracle_queue_pda,
+    ID as PROGRAM_ID,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -364,12 +364,10 @@ pub async fn process_oracle_queue(
                                 .downcast_ref::<ClientError>()
                                 .and_then(ClientError::get_transaction_error)
                             {
-                                if code == EphemeralVrfError::RandomnessRequestNotFound as u32 {
+                                if code == SolanaVrfError::RandomnessRequestNotFound as u32 {
                                     break;
                                 }
-                                if code
-                                    == EphemeralVrfError::OracleMustProvideInDifferentSlot as u32
-                                {
+                                if code == SolanaVrfError::OracleMustProvideInDifferentSlot as u32 {
                                     use_backoff = false;
                                 }
                                 if code == ANCHOR_CONSTRAINT_ADDRESS_ERROR {

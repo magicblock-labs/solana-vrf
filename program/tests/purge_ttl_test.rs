@@ -1,11 +1,11 @@
 //! Requests expire by wall-clock time, not a fixed slot count. Drives the real
 //! purge instruction with a controlled Clock so the elapsed time is exact.
 
-use ephemeral_vrf_api::prelude::*;
 use solana_program::clock::Clock;
 use solana_program_test::{processor, ProgramTest};
 use solana_sdk::account::Account;
 use solana_sdk::{signature::Keypair, signer::Signer, transaction::Transaction};
+use solana_vrf_api::prelude::*;
 
 /// Program-owned queue at index 0 holding items at the given creation slots.
 fn queue_with_items(size: usize, slots: &[u64]) -> Vec<u8> {
@@ -29,9 +29,9 @@ fn queue_with_items(size: usize, slots: &[u64]) -> Vec<u8> {
 #[tokio::test]
 async fn purge_expires_by_wall_clock_time() {
     let mut program_test = ProgramTest::new(
-        "ephemeral_vrf_program",
-        ephemeral_vrf_api::ID,
-        processor!(ephemeral_vrf_program::process_instruction),
+        "solana_vrf_program",
+        solana_vrf_api::ID,
+        processor!(solana_vrf_program::process_instruction),
     );
 
     let oracle = Keypair::new();
@@ -52,7 +52,7 @@ async fn purge_expires_by_wall_clock_time() {
         Account {
             lamports: 10_000_000_000,
             data: queue_with_items(9_500, &[0, 900]),
-            owner: ephemeral_vrf_api::ID,
+            owner: solana_vrf_api::ID,
             executable: false,
             rent_epoch: 0,
         },

@@ -1,6 +1,6 @@
-use ephemeral_vrf_api::prelude::*;
 use solana_program::epoch_schedule::EpochSchedule;
 use solana_program::msg;
+use solana_vrf_api::prelude::*;
 
 /// Remove all requests in the queue whose wall-clock age exceeds
 /// `QUEUE_TTL_SECONDS`.
@@ -23,10 +23,10 @@ pub fn process_purge_expired_requests(accounts: &[AccountInfo<'_>], data: &[u8])
     // Validate queue PDA seeds and ownership / writability
     oracle_queue_info
         .is_writable()?
-        .has_owner(&ephemeral_vrf_api::ID)?
+        .has_owner(&solana_vrf_api::ID)?
         .has_seeds(
             &[QUEUE, oracle_info.key.to_bytes().as_ref(), &[args.index]],
-            &ephemeral_vrf_api::ID,
+            &solana_vrf_api::ID,
         )?;
 
     // Measure request age in wall-clock seconds rather than a fixed slot count,

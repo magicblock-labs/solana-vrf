@@ -1,10 +1,10 @@
 //! Delegation is a one-time setup step: a queue that has already been used
 //! (so it may back mainnet integrations) must not be delegatable.
 
-use ephemeral_vrf_api::prelude::*;
 use solana_program_test::{processor, ProgramTest};
 use solana_sdk::account::Account;
 use solana_sdk::{signature::Keypair, signer::Signer, transaction::Transaction};
+use solana_vrf_api::prelude::*;
 
 /// A program-owned queue holding one request (variable region no longer zero).
 fn used_queue(size: usize) -> Vec<u8> {
@@ -23,9 +23,9 @@ fn used_queue(size: usize) -> Vec<u8> {
 #[tokio::test]
 async fn delegation_rejected_for_used_queue() {
     let mut program_test = ProgramTest::new(
-        "ephemeral_vrf_program",
-        ephemeral_vrf_api::ID,
-        processor!(ephemeral_vrf_program::process_instruction),
+        "solana_vrf_program",
+        solana_vrf_api::ID,
+        processor!(solana_vrf_program::process_instruction),
     );
 
     let authority = Keypair::new();
@@ -35,7 +35,7 @@ async fn delegation_rejected_for_used_queue() {
         Account {
             lamports: 1_000_000_000,
             data: used_queue(9_500),
-            owner: ephemeral_vrf_api::ID,
+            owner: solana_vrf_api::ID,
             executable: false,
             rent_epoch: 0,
         },
@@ -62,7 +62,7 @@ async fn delegation_rejected_for_used_queue() {
         solana_sdk::transaction::TransactionError::InstructionError(
             0,
             solana_program::instruction::InstructionError::Custom(
-                EphemeralVrfError::QueueAlreadyInUse as u32
+                SolanaVrfError::QueueAlreadyInUse as u32
             )
         )
     );

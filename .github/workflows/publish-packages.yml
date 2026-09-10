@@ -1,4 +1,4 @@
-name: Publish ephemeral vrf packages
+name: Publish SolanaVrf packages
 
 on:
   release:

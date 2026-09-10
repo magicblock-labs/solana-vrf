@@ -1,9 +1,9 @@
-use ephemeral_vrf_api::prelude::*;
 use solana_program::hash::hashv;
 use solana_program::msg;
 use solana_program::program::invoke;
 use solana_program::sysvar::slot_hashes;
 use solana_system_interface::instruction as system_instruction;
+use solana_vrf_api::prelude::*;
 
 /// Process a request for randomness
 ///
@@ -70,7 +70,7 @@ pub fn process_request_randomness(
 
     oracle_queue_info
         .is_writable()?
-        .has_owner(&ephemeral_vrf_api::ID)?;
+        .has_owner(&solana_vrf_api::ID)?;
 
     // Load slot and slothash
     slothashes_account_info.is_sysvar(&slot_hashes::id())?;
@@ -88,12 +88,12 @@ pub fn process_request_randomness(
 
         // Reject new requests on a paused queue so the oracle can drain and close it.
         if queue_acc.header.paused != 0 {
-            return Err(ProgramError::from(EphemeralVrfError::QueuePaused));
+            return Err(ProgramError::from(SolanaVrfError::QueuePaused));
         }
 
         // Optionally validate discriminator length to 8 bytes max (borsh Vec allows larger, but callbacks typically use 8)
         if args.callback_discriminator.len() > 8 {
-            return Err(ProgramError::from(EphemeralVrfError::ArgumentSizeTooLarge));
+            return Err(ProgramError::from(SolanaVrfError::ArgumentSizeTooLarge));
         }
 
         let metas = args

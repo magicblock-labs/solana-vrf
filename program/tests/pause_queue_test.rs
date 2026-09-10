@@ -2,10 +2,10 @@
 //! drained and closed), and unpause it again. Exercises the real instruction
 //! against a program-owned queue account.
 
-use ephemeral_vrf_api::prelude::*;
 use solana_program_test::{processor, ProgramTest};
 use solana_sdk::account::Account;
 use solana_sdk::{signature::Keypair, signer::Signer, transaction::Transaction};
+use solana_vrf_api::prelude::*;
 
 /// Build a valid, empty program-owned queue account for `oracle` at index 0.
 fn empty_queue(size: usize) -> Vec<u8> {
@@ -29,9 +29,9 @@ async fn paused_flag(
 #[tokio::test]
 async fn oracle_can_pause_and_unpause_queue() {
     let program_test = ProgramTest::new(
-        "ephemeral_vrf_program",
-        ephemeral_vrf_api::ID,
-        processor!(ephemeral_vrf_program::process_instruction),
+        "solana_vrf_program",
+        solana_vrf_api::ID,
+        processor!(solana_vrf_program::process_instruction),
     );
 
     let oracle = Keypair::new();
@@ -43,7 +43,7 @@ async fn oracle_can_pause_and_unpause_queue() {
         Account {
             lamports: 1_000_000_000,
             data: empty_queue(9_500),
-            owner: ephemeral_vrf_api::ID,
+            owner: solana_vrf_api::ID,
             executable: false,
             rent_epoch: 0,
         },

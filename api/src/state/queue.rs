@@ -1,4 +1,4 @@
-use crate::prelude::{AccountDiscriminator, EphemeralVrfError};
+use crate::prelude::{AccountDiscriminator, SolanaVrfError};
 use crate::steel::{AccountMeta, Pod, ProgramError, Pubkey, Zeroable};
 use borsh::{BorshDeserialize, BorshSerialize};
 use core::mem::{size_of, size_of_val};
@@ -305,7 +305,7 @@ impl<'a> QueueAccount<'a> {
         args: &[u8],
     ) -> Result<QueueItemLayout, ProgramError> {
         if metas.len() > MAX_CALLBACK_ACCOUNTS || args.len() > 512 {
-            return Err(ProgramError::from(EphemeralVrfError::ArgumentSizeTooLarge));
+            return Err(ProgramError::from(SolanaVrfError::ArgumentSizeTooLarge));
         }
 
         let total_needed = size_of::<QueueItem>()
@@ -435,7 +435,7 @@ impl<'a> QueueAccount<'a> {
             .scan_items(|logical_index, item_pos, _, item| {
                 (item.used == 1 && logical_index == index).then_some((item_pos, *item))
             })
-            .ok_or::<ProgramError>(EphemeralVrfError::InvalidQueueIndex.into())?;
+            .ok_or::<ProgramError>(SolanaVrfError::InvalidQueueIndex.into())?;
 
         // Logically remove: clear the used flag in place and trim trailing holes.
         item.used = 0;

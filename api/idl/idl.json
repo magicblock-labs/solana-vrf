@@ -1,10 +1,10 @@
 {
   "address": "Vrf1RNUjXmQGjmQrQLvJHs9SNkvDJEsRVFPkfSQUwGz",
   "metadata": {
-    "name": "ephemeral_vrf",
+    "name": "solana_vrf",
     "version": "1.0.0",
     "spec": "0.1.0",
-    "description": "Ephemeral VRF"
+    "description": "SolanaVrf"
   },
   "instructions": [
     {

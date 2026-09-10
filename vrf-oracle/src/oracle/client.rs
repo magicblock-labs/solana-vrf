@@ -1,6 +1,5 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use ephemeral_vrf_api::prelude::QUEUE_TTL_SECONDS;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use solana_client::{
@@ -11,6 +10,7 @@ use solana_client::{
 };
 use solana_commitment_config::CommitmentConfig;
 use solana_sdk::{pubkey::Pubkey, signature::Keypair};
+use solana_vrf_api::prelude::QUEUE_TTL_SECONDS;
 use std::{
     collections::HashMap,
     sync::{
@@ -39,12 +39,12 @@ use crate::oracle::processor::{fetch_and_process_program_accounts, process_oracl
 use crate::oracle::sources::{LaserstreamSource, WebSocketSource};
 use crate::oracle::utils::queue_memcmp_filter;
 use curve25519_dalek::{RistrettoPoint, Scalar};
-use ephemeral_vrf::vrf::generate_vrf_keypair;
-use ephemeral_vrf_api::prelude::AccountDiscriminator;
-use ephemeral_vrf_api::{prelude::Queue, ID as PROGRAM_ID};
 use log::{error, info, warn};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::signer::Signer;
+use solana_vrf::vrf::generate_vrf_keypair;
+use solana_vrf_api::prelude::AccountDiscriminator;
+use solana_vrf_api::{prelude::Queue, ID as PROGRAM_ID};
 
 pub type RequestId = [u8; 32];
 pub type QueueKey = String;

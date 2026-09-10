@@ -2,8 +2,6 @@ mod fixtures;
 
 use crate::fixtures::{TEST_AUTHORITY, TEST_CALLBACK_PROGRAM, TEST_ORACLE};
 use ephemeral_rollups_sdk::consts::DELEGATION_PROGRAM_ID;
-use ephemeral_vrf::vrf::{compute_vrf, generate_vrf_keypair, verify_vrf};
-use ephemeral_vrf_api::prelude::*;
 use solana_compute_budget_interface::ComputeBudgetInstruction;
 use solana_curve25519::ristretto::PodRistrettoPoint;
 use solana_curve25519::scalar::PodScalar;
@@ -12,12 +10,14 @@ use solana_program::sysvar::slot_hashes;
 use solana_program_test::{processor, read_file, ProgramTest, ProgramTestContext};
 use solana_sdk::account::Account;
 use solana_sdk::{pubkey, signature::Keypair, signer::Signer, transaction::Transaction};
+use solana_vrf::vrf::{compute_vrf, generate_vrf_keypair, verify_vrf};
+use solana_vrf_api::prelude::*;
 
 async fn setup() -> ProgramTestContext {
     let mut program_test = ProgramTest::new(
-        "ephemeral_vrf_program",
-        ephemeral_vrf_api::ID,
-        processor!(ephemeral_vrf_program::process_instruction),
+        "solana_vrf_program",
+        solana_vrf_api::ID,
+        processor!(solana_vrf_program::process_instruction),
     );
 
     // Setup the test authority
@@ -99,7 +99,7 @@ async fn run_test() {
     let oracles_address = oracles_pda().0;
     let oracles_account = banks.get_account(oracles_address).await.unwrap().unwrap();
     let oracles = Oracles::try_from_bytes_with_discriminator(&oracles_account.data).unwrap();
-    assert_eq!(oracles_account.owner, ephemeral_vrf_api::ID);
+    assert_eq!(oracles_account.owner, solana_vrf_api::ID);
     assert_eq!(oracles.oracles.len(), 0);
 
     // Submit add oracle transaction.
@@ -134,7 +134,7 @@ async fn run_test() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(oracle_data_info.owner, ephemeral_vrf_api::ID);
+    assert_eq!(oracle_data_info.owner, solana_vrf_api::ID);
     let oracle_data = Oracle::try_from_bytes(&oracle_data_info.data).unwrap();
     assert!(oracle_data.registration_slot > 0);
     assert_eq!(
@@ -168,7 +168,7 @@ async fn run_test() {
         .unwrap()
         .unwrap();
     let oracle_queue = Queue::try_from_bytes(&oracle_queue_account.data).unwrap();
-    assert_eq!(oracle_queue_account.owner, ephemeral_vrf_api::ID);
+    assert_eq!(oracle_queue_account.owner, solana_vrf_api::ID);
     assert_eq!(oracle_queue_account.data.len(), target_size as usize);
     assert_eq!(oracle_queue.index, 0);
     assert_eq!(oracle_queue.item_count, 0);
@@ -194,7 +194,7 @@ async fn run_test() {
         .unwrap();
     let mut qdata = oracle_queue_account.data.clone();
     let queue_acc = QueueAccount::load(&mut qdata[..]).unwrap();
-    assert_eq!(oracle_queue_account.owner, ephemeral_vrf_api::ID);
+    assert_eq!(oracle_queue_account.owner, solana_vrf_api::ID);
     assert_eq!(queue_acc.len(), 1);
 
     // Verify cost of the vrf was collected in the oracle queue account.
@@ -261,7 +261,7 @@ async fn run_test() {
         .unwrap();
     let mut qdata = oracle_queue_account.data.clone();
     let queue_acc = QueueAccount::load(&mut qdata[..]).unwrap();
-    assert_eq!(oracle_queue_account.owner, ephemeral_vrf_api::ID);
+    assert_eq!(oracle_queue_account.owner, solana_vrf_api::ID);
     assert_eq!(queue_acc.len(), 0);
     assert_eq!(
         oracle_queue_account.lamports,
@@ -538,7 +538,7 @@ pub fn request_randomness_to_queue(
         AccountMeta::new(oracle_queue, false),
         AccountMeta::new_readonly(system_program::ID, false),
         AccountMeta::new_readonly(slot_hashes::ID, false),
-        AccountMeta::new_readonly(ephemeral_vrf_api::ID, false),
+        AccountMeta::new_readonly(solana_vrf_api::ID, false),
     ];
 
     // Instruction data: discriminator + client_seed

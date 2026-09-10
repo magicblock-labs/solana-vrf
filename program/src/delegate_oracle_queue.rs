@@ -1,7 +1,7 @@
 use ephemeral_rollups_sdk::cpi::{
     delegate_account_with_any_validator, DelegateAccounts, DelegateConfig,
 };
-use ephemeral_vrf_api::prelude::*;
+use solana_vrf_api::prelude::*;
 
 /// Process the delegation of an Oracle queue to the delegation program
 ///
@@ -16,18 +16,18 @@ use ephemeral_vrf_api::prelude::*;
 /// 3. `[writable]` The delegation record account
 /// 4. `[writable]` The delegation metadata account
 /// 5. `[]` The delegation program
-/// 6. `[]` The owner program (must be the ephemeral VRF program)
+/// 6. `[]` The owner program (must be the SolanaVrf program)
 /// 7. `[]` The system program
 ///
 /// Requirements:
 ///
 /// - The authority (account 0) must be a signer.
 /// - The Oracle queue (account 1) must be a valid PDA with seeds [QUEUE, authority.key, index].
-/// - The owner program (account 6) must be the ephemeral VRF program.
+/// - The owner program (account 6) must be the SolanaVrf program.
 /// - The delegation accounts (2-4) must have the correct PDAs for the delegation program.
 ///
 /// 1. Parse the instruction data and extract arguments (DelegateOracleQueue).
-/// 2. Verify the owner program is the ephemeral VRF program.
+/// 2. Verify the owner program is the SolanaVrf program.
 /// 3. Set up the delegation accounts structure.
 /// 4. Create the PDA seeds for the Oracle queue.
 /// 5. Configure the delegation parameters.
@@ -44,12 +44,12 @@ pub fn process_delegate_oracle_queue(accounts: &[AccountInfo<'_>], data: &[u8]) 
 
     // Checks
     authority_info.is_signer()?;
-    owner_program.has_address(&ephemeral_vrf_api::ID)?;
+    owner_program.has_address(&solana_vrf_api::ID)?;
     let pda_seeds: &[&[u8]] = &[QUEUE, &authority_info.key.to_bytes(), &[args.index]];
     oracle_queue_info
         .is_writable()?
-        .has_owner(&ephemeral_vrf_api::ID)?
-        .has_seeds(pda_seeds, &ephemeral_vrf_api::ID)?;
+        .has_owner(&solana_vrf_api::ID)?
+        .has_seeds(pda_seeds, &solana_vrf_api::ID)?;
 
     // Delegation is a one-time setup step: only allow it for a queue that has
     // never been used, so a queue already relied upon by mainnet projects can't
@@ -60,7 +60,7 @@ pub fn process_delegate_oracle_queue(accounts: &[AccountInfo<'_>], data: &[u8]) 
         let queue = Queue::try_from_bytes(&data)?;
         let variable_region_start = 8 + core::mem::size_of::<Queue>();
         if queue.item_count != 0 || data[variable_region_start..].iter().any(|&b| b != 0) {
-            return Err(EphemeralVrfError::QueueAlreadyInUse.into());
+            return Err(SolanaVrfError::QueueAlreadyInUse.into());
         }
     }
 

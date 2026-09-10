@@ -20,7 +20,7 @@ use purge_expired_requests::*;
 use request_randomness::*;
 use set_queue_paused::*;
 
-use ephemeral_vrf_api::prelude::*;
+use solana_vrf_api::prelude::*;
 
 // Program entrypoint, declared up front rather than after the helpers it dispatches to.
 solana_program::entrypoint!(process_instruction);
@@ -29,7 +29,7 @@ fn parse_instruction8<'a, T: std::convert::TryFrom<u8>>(
     program_id: &'a Pubkey,
     data: &'a [u8],
 ) -> Result<(T, &'a [u8]), ProgramError> {
-    if program_id.ne(&ephemeral_vrf_api::ID) {
+    if program_id.ne(&solana_vrf_api::ID) {
         return Err(ProgramError::IncorrectProgramId);
     }
     if data.len() < 8 {

@@ -1,7 +1,5 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use ephemeral_vrf::vrf::generate_vrf_keypair;
-use ephemeral_vrf_api::prelude::*;
 use solana_client::rpc_client::RpcClient;
 use solana_commitment_config::CommitmentConfig;
 use solana_compute_budget_interface::ComputeBudgetInstruction;
@@ -10,10 +8,12 @@ use solana_sdk::{
     signature::{Keypair, Signer},
     transaction::Transaction,
 };
+use solana_vrf::vrf::generate_vrf_keypair;
+use solana_vrf_api::prelude::*;
 use std::process::exit;
 use std::str::FromStr;
 
-/// VRF CLI - A tool to interact with the Ephemeral VRF program
+/// VRF CLI - A tool to interact with the SolanaVrf program
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
 struct Args {
@@ -187,7 +187,7 @@ async fn main() -> Result<()> {
                         queue,
                         queue_struct.item_count,
                         queue_struct.index,
-                        !account.owner.eq(&ephemeral_vrf_api::ID)
+                        !account.owner.eq(&solana_vrf_api::ID)
                     );
                 }
             }

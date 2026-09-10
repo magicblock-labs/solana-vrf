@@ -1,6 +1,6 @@
-use ephemeral_vrf_api::loaders::is_empty_or_zeroed;
-use ephemeral_vrf_api::prelude::*;
 use solana_program::msg;
+use solana_vrf_api::loaders::is_empty_or_zeroed;
+use solana_vrf_api::prelude::*;
 const MAX_EXTRA_BYTES: usize = 10_240;
 
 /// Process the initialization of the Oracle queue
@@ -49,22 +49,21 @@ pub fn process_initialize_oracle_queue(accounts: &[AccountInfo<'_>], data: &[u8]
     let oracle_key_ref = oracle_key_bytes.as_ref();
 
     // Validate seeds
-    oracle_data_info.has_seeds(&[ORACLE_DATA, oracle_key_ref], &ephemeral_vrf_api::ID)?;
-    oracle_queue_info.is_writable()?.has_seeds(
-        &[QUEUE, oracle_key_ref, &[args.index]],
-        &ephemeral_vrf_api::ID,
-    )?;
+    oracle_data_info.has_seeds(&[ORACLE_DATA, oracle_key_ref], &solana_vrf_api::ID)?;
+    oracle_queue_info
+        .is_writable()?
+        .has_seeds(&[QUEUE, oracle_key_ref, &[args.index]], &solana_vrf_api::ID)?;
     is_empty_or_zeroed(oracle_queue_info)?;
 
     // PDA creation or reallocation
     let seeds: &[&[u8]] = &[QUEUE, oracle_key_ref, &[args.index]];
-    let bump = Pubkey::find_program_address(seeds, &ephemeral_vrf_api::ID).1;
+    let bump = Pubkey::find_program_address(seeds, &solana_vrf_api::ID).1;
 
     let target_size = args.target_size as usize;
     // Hard cap: keep every O(n) queue operation (above all the single-pass
     // purge) well within the per-transaction compute budget.
     if args.target_size > MAX_QUEUE_ACCOUNT_SIZE {
-        return Err(EphemeralVrfError::QueueSizeTooLarge.into());
+        return Err(SolanaVrfError::QueueSizeTooLarge.into());
     }
     let current_size = oracle_queue_info.data_len();
 
@@ -75,7 +74,7 @@ pub fn process_initialize_oracle_queue(accounts: &[AccountInfo<'_>], data: &[u8]
         // (current_size == 0) and realloc_size == MAX_EXTRA_BYTES. Use realloc_size
         // in both branches so the size increment is defined consistently.
         let realloc_size = current_size + MAX_EXTRA_BYTES;
-        if oracle_queue_info.owner != &ephemeral_vrf_api::ID {
+        if oracle_queue_info.owner != &solana_vrf_api::ID {
             create_pda(
                 oracle_queue_info,
                 realloc_size,
@@ -96,7 +95,7 @@ pub fn process_initialize_oracle_queue(accounts: &[AccountInfo<'_>], data: &[u8]
     }
 
     // Finalize PDA size if needed
-    if oracle_queue_info.owner != &ephemeral_vrf_api::ID {
+    if oracle_queue_info.owner != &solana_vrf_api::ID {
         create_pda(
             oracle_queue_info,
             target_size,
@@ -119,7 +118,7 @@ pub fn process_initialize_oracle_queue(accounts: &[AccountInfo<'_>], data: &[u8]
     }
 
     // Increment oracle's open queue count
-    let mut oracle_data_mut = oracle_data_info.as_account_mut::<Oracle>(&ephemeral_vrf_api::ID)?;
+    let mut oracle_data_mut = oracle_data_info.as_account_mut::<Oracle>(&solana_vrf_api::ID)?;
     oracle_data_mut.open_queues = oracle_data_mut.open_queues.saturating_add(1);
 
     Ok(())

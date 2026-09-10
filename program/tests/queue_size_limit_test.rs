@@ -4,11 +4,11 @@
 //! `target_size` must be rejected with `QueueSizeTooLarge`, while a valid
 //! size must still initialize the queue correctly.
 
-use ephemeral_vrf_api::prelude::*;
 use solana_curve25519::ristretto::PodRistrettoPoint;
 use solana_program_test::{processor, ProgramTest};
 use solana_sdk::account::Account;
 use solana_sdk::{signature::Keypair, signer::Signer, transaction::Transaction};
+use solana_vrf_api::prelude::*;
 
 fn oracle_data_account(
     identity: &solana_program::pubkey::Pubkey,
@@ -25,7 +25,7 @@ fn oracle_data_account(
         Account {
             lamports: 1_000_000_000,
             data,
-            owner: ephemeral_vrf_api::ID,
+            owner: solana_vrf_api::ID,
             executable: false,
             rent_epoch: 0,
         },
@@ -35,9 +35,9 @@ fn oracle_data_account(
 #[tokio::test]
 async fn queue_size_is_capped_at_max() {
     let mut program_test = ProgramTest::new(
-        "ephemeral_vrf_program",
-        ephemeral_vrf_api::ID,
-        processor!(ephemeral_vrf_program::process_instruction),
+        "solana_vrf_program",
+        solana_vrf_api::ID,
+        processor!(solana_vrf_program::process_instruction),
     );
 
     let oracle_keypair = Keypair::new();
@@ -85,7 +85,7 @@ async fn queue_size_is_capped_at_max() {
         solana_sdk::transaction::TransactionError::InstructionError(
             0,
             solana_program::instruction::InstructionError::Custom(
-                EphemeralVrfError::QueueSizeTooLarge as u32
+                SolanaVrfError::QueueSizeTooLarge as u32
             )
         )
     );

@@ -1,4 +1,4 @@
-use ephemeral_vrf_api::prelude::*;
+use solana_vrf_api::prelude::*;
 
 /// Pause or unpause an Oracle queue.
 ///
@@ -15,7 +15,7 @@ use ephemeral_vrf_api::prelude::*;
 ///
 /// - The Oracle (account 0) must be a signer.
 /// - The queue (account 1) must be a valid PDA with seeds [QUEUE, oracle.key, index],
-///   owned by the ephemeral VRF program.
+///   owned by the SolanaVrf program.
 /// - `paused` must be 0 or 1; any other value is rejected.
 pub fn process_set_queue_paused(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     let args = SetQueuePaused::try_from_bytes(data)?;
@@ -31,10 +31,10 @@ pub fn process_set_queue_paused(accounts: &[AccountInfo], data: &[u8]) -> Progra
 
     oracle_queue_info
         .is_writable()?
-        .has_owner(&ephemeral_vrf_api::ID)?
+        .has_owner(&solana_vrf_api::ID)?
         .has_seeds(
             &[QUEUE, oracle_info.key.to_bytes().as_ref(), &[args.index]],
-            &ephemeral_vrf_api::ID,
+            &solana_vrf_api::ID,
         )?;
 
     let mut data = oracle_queue_info.try_borrow_mut_data()?;

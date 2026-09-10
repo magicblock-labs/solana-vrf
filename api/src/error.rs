@@ -2,7 +2,7 @@ use crate::steel::*;
 
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq, IntoPrimitive)]
 #[repr(u32)]
-pub enum EphemeralVrfError {
+pub enum SolanaVrfError {
     #[error("Unauthorized authority")]
     Unauthorized = 0,
     #[error("Randomness request not found")]
@@ -29,8 +29,8 @@ pub enum EphemeralVrfError {
     QueueSizeTooLarge = 16,
 }
 
-impl From<EphemeralVrfError> for ProgramError {
-    fn from(error: EphemeralVrfError) -> Self {
+impl From<SolanaVrfError> for ProgramError {
+    fn from(error: SolanaVrfError) -> Self {
         ProgramError::Custom(error as u32)
     }
 }

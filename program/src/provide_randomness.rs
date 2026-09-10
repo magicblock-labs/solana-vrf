@@ -1,6 +1,6 @@
-use ephemeral_vrf_api::prelude::*;
-use ephemeral_vrf_api::verify::verify_vrf;
 use solana_program::{hash::hash, pubkey};
+use solana_vrf_api::prelude::*;
+use solana_vrf_api::verify::verify_vrf;
 
 const ALLOWED_EXECUTABLE_CALLBACK_ACCOUNTS: [Pubkey; 8] = [
     pubkey!("11111111111111111111111111111111"),
@@ -80,11 +80,11 @@ pub fn process_provide_randomness(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
     // Load oracle data
     oracle_data_info.has_seeds(
         &[ORACLE_DATA, oracle_info.key.to_bytes().as_ref()],
-        &ephemeral_vrf_api::ID,
+        &solana_vrf_api::ID,
     )?;
 
     let oracle_vrf_pubkey = {
-        let oracle_data = oracle_data_info.as_account::<Oracle>(&ephemeral_vrf_api::ID)?;
+        let oracle_data = oracle_data_info.as_account::<Oracle>(&solana_vrf_api::ID)?;
         oracle_data.vrf_pubkey
     };
 
@@ -96,10 +96,10 @@ pub fn process_provide_randomness(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
     };
     oracle_queue_info
         .is_writable()?
-        .has_owner(&ephemeral_vrf_api::ID)?
+        .has_owner(&solana_vrf_api::ID)?
         .has_seeds(
             &[QUEUE, oracle_info.key.to_bytes().as_ref(), &[queue_index]],
-            &ephemeral_vrf_api::ID,
+            &solana_vrf_api::ID,
         )?;
 
     let output = &args.output;
@@ -114,7 +114,7 @@ pub fn process_provide_randomness(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
         let (index, _item) = {
             let (index, item) = queue_acc
                 .find_item_by_id(&args.input)
-                .ok_or::<ProgramError>(EphemeralVrfError::RandomnessRequestNotFound.into())?;
+                .ok_or::<ProgramError>(SolanaVrfError::RandomnessRequestNotFound.into())?;
 
             // Check that the oracle signer is not in the callback accounts
             let oracle_in_accounts = {
@@ -124,13 +124,13 @@ pub fn process_provide_randomness(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
                     .any(|acc| Pubkey::new_from_array(acc.pubkey).eq(oracle_info.key))
             };
             if oracle_in_accounts {
-                return Err(EphemeralVrfError::InvalidCallbackAccounts.into());
+                return Err(SolanaVrfError::InvalidCallbackAccounts.into());
             }
 
             // Ensure that fulfillment happens in a different (later) slot than the request
             if Clock::get()?.slot <= item.slot {
                 return Err(ProgramError::from(
-                    EphemeralVrfError::OracleMustProvideInDifferentSlot,
+                    SolanaVrfError::OracleMustProvideInDifferentSlot,
                 ));
             }
 
@@ -145,7 +145,7 @@ pub fn process_provide_randomness(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
             (commitment_base_compressed, commitment_hash_compressed, s),
         );
         if !verified {
-            return Err(EphemeralVrfError::InvalidProof.into());
+            return Err(SolanaVrfError::InvalidProof.into());
         }
 
         // Remove the item from the queue (capture removed item for building callback)
@@ -191,7 +191,7 @@ pub fn process_provide_randomness(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
             let bump = removed_item.identity_bump;
             let scoped = Pubkey::create_program_address(
                 &[IDENTITY, callback_id.as_ref(), &[bump]],
-                &ephemeral_vrf_api::ID,
+                &solana_vrf_api::ID,
             )
             .map_err(|_| ProgramError::InvalidSeeds)?;
             // Require the scoped identity for a scoped request (no fallback to the global one).
@@ -202,7 +202,7 @@ pub fn process_provide_randomness(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
         _ => {
             // Legacy global identity (deprecated): keep the executable allow-list check.
             if has_disallowed_executable_callback_account(remaining_accounts) {
-                return Err(EphemeralVrfError::InvalidCallbackAccounts.into());
+                return Err(SolanaVrfError::InvalidCallbackAccounts.into());
             }
             let id = program_identity_pda();
             program_identity_info.has_address(&id.0)?;
