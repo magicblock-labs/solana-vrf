@@ -1,6 +1,6 @@
-use ephemeral_vrf_api::prelude::*;
-use ephemeral_vrf_api::verify::verify_vrf;
 use solana_program::{hash::hash, pubkey};
+use solana_vrf_api::prelude::*;
+use solana_vrf_api::verify::verify_vrf;
 
 const ALLOWED_EXECUTABLE_CALLBACK_ACCOUNTS: [Pubkey; 8] = [
     pubkey!("11111111111111111111111111111111"),
@@ -13,35 +13,54 @@ const ALLOWED_EXECUTABLE_CALLBACK_ACCOUNTS: [Pubkey; 8] = [
     pubkey!("Magic11111111111111111111111111111111111111"),
 ];
 
+/// BPF/native loaders. An account owned by one of these is a program (or its
+/// program-data/buffer account), even when the `executable` flag is not set.
+const LOADERS: [Pubkey; 5] = [
+    pubkey!("NativeLoader1111111111111111111111111111111"),
+    pubkey!("BPFLoader1111111111111111111111111111111111"),
+    pubkey!("BPFLoader2111111111111111111111111111111111"),
+    pubkey!("BPFLoaderUpgradeab1e11111111111111111111111"),
+    pubkey!("LoaderV411111111111111111111111111111111111"),
+];
+
+/// Detect a program account. The `executable` flag alone is not reliable
+/// (runtime checks on it were removed, legacy programs may leave it false, and
+/// future loaders might not set it), so also treat any account owned by a BPF
+/// loader as a program. This is a conservative superset (it also matches
+/// program-data and buffer accounts), which is fine for a callback filter.
+fn is_program(account: &AccountInfo<'_>) -> bool {
+    account.executable || LOADERS.contains(account.owner)
+}
+
 fn has_disallowed_executable_callback_account(accounts: &[AccountInfo<'_>]) -> bool {
     accounts.iter().any(|account| {
-        account.executable && !ALLOWED_EXECUTABLE_CALLBACK_ACCOUNTS.contains(account.key)
+        is_program(account) && !ALLOWED_EXECUTABLE_CALLBACK_ACCOUNTS.contains(account.key)
     })
 }
 
-/// Process the provide randomness instruction which verifies VRF proof and executes vrf-macro
+/// Process the provide randomness instruction which verifies VRF proof and executes the callback
 ///
 /// Accounts:
 ///
 /// 0. `[signer]` signer - The oracle signer providing randomness
-/// 1. `[]` program_identity_info - Used to allow the vrf-macro program to verify the identity of the oracle program
+/// 1. `[]` program_identity_info - Used to allow the callback program to verify the identity of the oracle program
 /// 2. `[]` oracle_data_info - Oracle data account associated with the signer
 /// 3. `[writable]` oracle_queue_info - Queue storing randomness requests
 /// 4. `[]` callback_program_info - Program to call with the randomness
-/// 5. `[varies]` remaining_accounts - Accounts needed for the vrf-macro
+/// 5. `[varies]` remaining_accounts - Accounts needed for the callback
 ///
 /// Requirements:
 ///
 /// - Signer must be a registered oracle with valid VRF keypair
 /// - VRF proof must be valid for the given input and output
 /// - Request must exist in the oracle queue
-/// - Oracle signer must not be included in vrf-macro accounts
+/// - Oracle signer must not be included in callback accounts
 /// - Callback remaining accounts must not include disallowed executable program accounts
 ///
 /// 1. Verify the oracle signer and load oracle data
 /// 2. Verify the VRF proof
 /// 3. Remove the request from the queue
-/// 4. Invoke the vrf-macro with the randomness
+/// 4. Invoke the callback with the randomness
 pub fn process_provide_randomness(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     // Parse args
     let args = ProvideRandomness::try_from_bytes(data)?;
@@ -61,11 +80,11 @@ pub fn process_provide_randomness(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
     // Load oracle data
     oracle_data_info.has_seeds(
         &[ORACLE_DATA, oracle_info.key.to_bytes().as_ref()],
-        &ephemeral_vrf_api::ID,
+        &solana_vrf_api::ID,
     )?;
 
     let oracle_vrf_pubkey = {
-        let oracle_data = oracle_data_info.as_account::<Oracle>(&ephemeral_vrf_api::ID)?;
+        let oracle_data = oracle_data_info.as_account::<Oracle>(&solana_vrf_api::ID)?;
         oracle_data.vrf_pubkey
     };
 
@@ -77,10 +96,10 @@ pub fn process_provide_randomness(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
     };
     oracle_queue_info
         .is_writable()?
-        .has_owner(&ephemeral_vrf_api::ID)?
+        .has_owner(&solana_vrf_api::ID)?
         .has_seeds(
             &[QUEUE, oracle_info.key.to_bytes().as_ref(), &[queue_index]],
-            &ephemeral_vrf_api::ID,
+            &solana_vrf_api::ID,
         )?;
 
     let output = &args.output;
@@ -89,19 +108,15 @@ pub fn process_provide_randomness(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
     let s = &args.scalar;
 
     let removed_item_and_buf = {
-        let mut data = oracle_queue_info.try_borrow_mut_data()?;
-        if data.len() < 8 {
-            return Err(ProgramError::InvalidAccountData);
-        }
-        let queue_data = &mut data[8..];
-        let mut queue_acc = QueueAccount::load(queue_data)?;
+        let mut raw_data = oracle_queue_info.try_borrow_mut_data()?;
+        let mut queue_acc = QueueAccount::load(&mut raw_data)?;
 
         let (index, _item) = {
             let (index, item) = queue_acc
                 .find_item_by_id(&args.input)
-                .ok_or::<ProgramError>(EphemeralVrfError::RandomnessRequestNotFound.into())?;
+                .ok_or::<ProgramError>(SolanaVrfError::RandomnessRequestNotFound.into())?;
 
-            // Check that the oracle signer is not in the vrf-macro accounts
+            // Check that the oracle signer is not in the callback accounts
             let oracle_in_accounts = {
                 let metas = item.account_metas(queue_acc.acc);
                 metas
@@ -109,13 +124,13 @@ pub fn process_provide_randomness(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
                     .any(|acc| Pubkey::new_from_array(acc.pubkey).eq(oracle_info.key))
             };
             if oracle_in_accounts {
-                return Err(EphemeralVrfError::InvalidCallbackAccounts.into());
+                return Err(SolanaVrfError::InvalidCallbackAccounts.into());
             }
 
             // Ensure that fulfillment happens in a different (later) slot than the request
             if Clock::get()?.slot <= item.slot {
                 return Err(ProgramError::from(
-                    EphemeralVrfError::OracleMustProvideInDifferentSlot,
+                    SolanaVrfError::OracleMustProvideInDifferentSlot,
                 ));
             }
 
@@ -130,7 +145,7 @@ pub fn process_provide_randomness(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
             (commitment_base_compressed, commitment_hash_compressed, s),
         );
         if !verified {
-            return Err(EphemeralVrfError::InvalidProof.into());
+            return Err(SolanaVrfError::InvalidProof.into());
         }
 
         // Remove the item from the queue (capture removed item for building callback)
@@ -143,7 +158,7 @@ pub fn process_provide_randomness(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
 
     let (removed_item, metas_vec, disc_vec, args_vec) = removed_item_and_buf;
 
-    // Invoke vrf-macro with randomness
+    // Invoke the callback with randomness
     callback_program_info.has_address(&Pubkey::new_from_array(removed_item.callback_program_id))?;
     let mut accounts_metas = vec![AccountMeta {
         pubkey: *program_identity_info.key,
@@ -167,7 +182,7 @@ pub fn process_provide_randomness(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
     all_accounts.extend(vec![program_identity_info.clone()]);
     all_accounts.extend_from_slice(remaining_accounts);
 
-    // Invoke the vrf-macro with randomness, signing with the appropriate identity.
+    // Invoke the callback with randomness, signing with the appropriate identity.
     let callback_id = Pubkey::new_from_array(removed_item.callback_program_id);
     match removed_item.identity_mode {
         1 => {
@@ -176,7 +191,7 @@ pub fn process_provide_randomness(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
             let bump = removed_item.identity_bump;
             let scoped = Pubkey::create_program_address(
                 &[IDENTITY, callback_id.as_ref(), &[bump]],
-                &ephemeral_vrf_api::ID,
+                &solana_vrf_api::ID,
             )
             .map_err(|_| ProgramError::InvalidSeeds)?;
             // Require the scoped identity for a scoped request (no fallback to the global one).
@@ -187,7 +202,7 @@ pub fn process_provide_randomness(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
         _ => {
             // Legacy global identity (deprecated): keep the executable allow-list check.
             if has_disallowed_executable_callback_account(remaining_accounts) {
-                return Err(EphemeralVrfError::InvalidCallbackAccounts.into());
+                return Err(SolanaVrfError::InvalidCallbackAccounts.into());
             }
             let id = program_identity_pda();
             program_identity_info.has_address(&id.0)?;

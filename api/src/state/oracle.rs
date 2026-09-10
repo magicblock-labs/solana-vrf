@@ -7,7 +7,7 @@ use solana_curve25519::ristretto::PodRistrettoPoint;
 pub struct Oracle {
     pub vrf_pubkey: PodRistrettoPoint,
     pub registration_slot: u64,
-    pub open_queue: u64,
+    pub open_queues: u64,
 }
 
 impl Oracle {

@@ -11,12 +11,12 @@ use solana_sdk::pubkey::Pubkey;
 
 use crate::blockhash_cache::BlockhashCache;
 use crate::oracle::client::{QueueUpdateSource, SlotTracker};
-use ephemeral_vrf_api::prelude::Queue;
-use ephemeral_vrf_api::ID as PROGRAM_ID;
 use helius_laserstream::{
     grpc::{subscribe_update::UpdateOneof, SlotStatus, SubscribeUpdate},
     LaserstreamError,
 };
+use solana_vrf_api::prelude::Queue;
+use solana_vrf_api::ID as PROGRAM_ID;
 
 pub struct WebSocketSource {
     pub subscription: Receiver<solana_client::rpc_response::Response<RpcKeyedAccount>>,

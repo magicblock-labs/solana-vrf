@@ -10,6 +10,7 @@ use solana_client::{
 };
 use solana_commitment_config::CommitmentConfig;
 use solana_sdk::{pubkey::Pubkey, signature::Keypair};
+use solana_vrf_api::prelude::QUEUE_TTL_SECONDS;
 use std::{
     collections::HashMap,
     sync::{
@@ -38,12 +39,12 @@ use crate::oracle::processor::{fetch_and_process_program_accounts, process_oracl
 use crate::oracle::sources::{LaserstreamSource, WebSocketSource};
 use crate::oracle::utils::queue_memcmp_filter;
 use curve25519_dalek::{RistrettoPoint, Scalar};
-use ephemeral_vrf::vrf::generate_vrf_keypair;
-use ephemeral_vrf_api::prelude::AccountDiscriminator;
-use ephemeral_vrf_api::{prelude::Queue, ID as PROGRAM_ID};
 use log::{error, info, warn};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::signer::Signer;
+use solana_vrf::vrf::generate_vrf_keypair;
+use solana_vrf_api::prelude::AccountDiscriminator;
+use solana_vrf_api::{prelude::Queue, ID as PROGRAM_ID};
 
 pub type RequestId = [u8; 32];
 pub type QueueKey = String;
@@ -67,6 +68,8 @@ const NON_ER_EARLY_SEND_BONUS: Duration = Duration::from_millis(400);
 const NON_ER_MIN_SLOT_DURATION: Duration = Duration::from_millis(200);
 const MIN_SLOT_SAMPLE: Duration = Duration::from_millis(1);
 const MIN_SLOT_SAMPLES: u8 = 3;
+/// Assumed slot duration before the tracker has measured one.
+const NOMINAL_SLOT_DURATION: Duration = Duration::from_millis(500);
 
 #[derive(Clone)]
 pub struct SlotTracker {
@@ -105,6 +108,22 @@ impl SlotTracker {
 
     pub fn current(&self) -> u64 {
         *self.sender.borrow()
+    }
+
+    /// Number of slots that currently approximates `QUEUE_TTL_SECONDS` of
+    /// wall-clock time, using the measured slot duration so it tracks changes
+    /// to Solana's block time. Falls back to a nominal rate until enough
+    /// samples have been collected, so a single noisy measurement can't shrink
+    /// the threshold and cause premature purging.
+    pub fn ttl_slots(&self) -> u64 {
+        let timing = self.timing.lock().unwrap();
+        let slot_duration = if timing.samples >= MIN_SLOT_SAMPLES {
+            timing.slot_duration.unwrap_or(NOMINAL_SLOT_DURATION)
+        } else {
+            NOMINAL_SLOT_DURATION
+        };
+        let slot_ms = slot_duration.as_millis().max(1);
+        (QUEUE_TTL_SECONDS as u128 * 1000 / slot_ms) as u64
     }
 
     pub fn update(&self, slot: u64) {

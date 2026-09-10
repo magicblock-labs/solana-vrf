@@ -1,7 +1,7 @@
 use crate::prelude::*;
 use crate::steel::*;
 use crate::ID;
-use ephemeral_rollups_sdk::consts::{DELEGATION_PROGRAM_ID, MAGIC_CONTEXT_ID, MAGIC_PROGRAM_ID};
+use ephemeral_rollups_sdk::consts::DELEGATION_PROGRAM_ID;
 use ephemeral_rollups_sdk::pda::{
     delegate_buffer_pda_from_delegated_account_and_owner_program,
     delegation_metadata_pda_from_delegated_account, delegation_record_pda_from_delegated_account,
@@ -214,19 +214,6 @@ pub fn delegate_oracle_queue(signer: Pubkey, queue: Pubkey, index: u8) -> Instru
     }
 }
 
-pub fn undelegate_oracle_queue(signer: Pubkey, queue: Pubkey, index: u8) -> Instruction {
-    Instruction {
-        program_id: crate::ID,
-        accounts: vec![
-            AccountMeta::new(signer, true),
-            AccountMeta::new(queue, false),
-            AccountMeta::new(MAGIC_CONTEXT_ID, false),
-            AccountMeta::new_readonly(MAGIC_PROGRAM_ID, false),
-        ],
-        data: UndelegateOracleQueue { index }.to_bytes(),
-    }
-}
-
 pub fn close_oracle_queue(identity: Pubkey, index: u8) -> Instruction {
     Instruction {
         program_id: crate::ID,
@@ -236,6 +223,24 @@ pub fn close_oracle_queue(identity: Pubkey, index: u8) -> Instruction {
             AccountMeta::new(oracle_queue_pda(&identity, index).0, false),
         ],
         data: CloseOracleQueue { index }.to_bytes(),
+    }
+}
+
+/// Pause (or unpause) an oracle queue. A paused queue rejects new randomness
+/// requests, letting the oracle drain and then close it. Oracle-gated: the
+/// oracle identity must sign.
+pub fn set_queue_paused(identity: Pubkey, index: u8, paused: bool) -> Instruction {
+    Instruction {
+        program_id: crate::ID,
+        accounts: vec![
+            AccountMeta::new_readonly(identity, true),
+            AccountMeta::new(oracle_queue_pda(&identity, index).0, false),
+        ],
+        data: SetQueuePaused {
+            index,
+            paused: paused as u8,
+        }
+        .to_bytes(),
     }
 }
 

@@ -2,8 +2,6 @@ mod fixtures;
 
 use crate::fixtures::{TEST_AUTHORITY, TEST_CALLBACK_PROGRAM, TEST_ORACLE};
 use ephemeral_rollups_sdk::consts::DELEGATION_PROGRAM_ID;
-use ephemeral_vrf::vrf::{compute_vrf, generate_vrf_keypair, verify_vrf};
-use ephemeral_vrf_api::prelude::*;
 use solana_compute_budget_interface::ComputeBudgetInstruction;
 use solana_curve25519::ristretto::PodRistrettoPoint;
 use solana_curve25519::scalar::PodScalar;
@@ -12,12 +10,14 @@ use solana_program::sysvar::slot_hashes;
 use solana_program_test::{processor, read_file, ProgramTest, ProgramTestContext};
 use solana_sdk::account::Account;
 use solana_sdk::{pubkey, signature::Keypair, signer::Signer, transaction::Transaction};
+use solana_vrf::vrf::{compute_vrf, generate_vrf_keypair, verify_vrf};
+use solana_vrf_api::prelude::*;
 
 async fn setup() -> ProgramTestContext {
     let mut program_test = ProgramTest::new(
-        "ephemeral_vrf_program",
-        ephemeral_vrf_api::ID,
-        processor!(ephemeral_vrf_program::process_instruction),
+        "solana_vrf_program",
+        solana_vrf_api::ID,
+        processor!(solana_vrf_program::process_instruction),
     );
 
     // Setup the test authority
@@ -44,7 +44,7 @@ async fn setup() -> ProgramTestContext {
         },
     );
 
-    // Setup program to test vrf-macro
+    // Setup program to test the callback
     let data = read_file("tests/integration/use-randomness/target/deploy/use_randomness.so");
     program_test.add_account(
         TEST_CALLBACK_PROGRAM,
@@ -99,7 +99,7 @@ async fn run_test() {
     let oracles_address = oracles_pda().0;
     let oracles_account = banks.get_account(oracles_address).await.unwrap().unwrap();
     let oracles = Oracles::try_from_bytes_with_discriminator(&oracles_account.data).unwrap();
-    assert_eq!(oracles_account.owner, ephemeral_vrf_api::ID);
+    assert_eq!(oracles_account.owner, solana_vrf_api::ID);
     assert_eq!(oracles.oracles.len(), 0);
 
     // Submit add oracle transaction.
@@ -134,17 +134,13 @@ async fn run_test() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(oracle_data_info.owner, ephemeral_vrf_api::ID);
+    assert_eq!(oracle_data_info.owner, solana_vrf_api::ID);
     let oracle_data = Oracle::try_from_bytes(&oracle_data_info.data).unwrap();
     assert!(oracle_data.registration_slot > 0);
     assert_eq!(
         oracle_data.vrf_pubkey.0,
         oracle_vrf_pk.compress().to_bytes()
     );
-
-    // Advance to current slot + 200
-    let current_slot = banks.get_sysvar::<Clock>().await.unwrap().slot;
-    context.warp_to_slot(current_slot + 200).unwrap();
 
     // Submit init oracle queue transaction.
     let target_size = 50_000u32;
@@ -172,7 +168,7 @@ async fn run_test() {
         .unwrap()
         .unwrap();
     let oracle_queue = Queue::try_from_bytes(&oracle_queue_account.data).unwrap();
-    assert_eq!(oracle_queue_account.owner, ephemeral_vrf_api::ID);
+    assert_eq!(oracle_queue_account.owner, solana_vrf_api::ID);
     assert_eq!(oracle_queue_account.data.len(), target_size as usize);
     assert_eq!(oracle_queue.index, 0);
     assert_eq!(oracle_queue.item_count, 0);
@@ -197,8 +193,8 @@ async fn run_test() {
         .unwrap()
         .unwrap();
     let mut qdata = oracle_queue_account.data.clone();
-    let queue_acc = QueueAccount::load(&mut qdata[8..]).unwrap();
-    assert_eq!(oracle_queue_account.owner, ephemeral_vrf_api::ID);
+    let queue_acc = QueueAccount::load(&mut qdata[..]).unwrap();
+    assert_eq!(oracle_queue_account.owner, solana_vrf_api::ID);
     assert_eq!(queue_acc.len(), 1);
 
     // Verify cost of the vrf was collected in the oracle queue account.
@@ -223,7 +219,7 @@ async fn run_test() {
         .unwrap()
         .unwrap();
     let mut qdata2 = oracle_queue_account.data.clone();
-    let queue_acc2 = QueueAccount::load(&mut qdata2[8..]).unwrap();
+    let queue_acc2 = QueueAccount::load(&mut qdata2[..]).unwrap();
     let vrf_input = queue_acc2.get_item_by_index(0).unwrap().id;
     let (output, (commitment_base_compressed, commitment_hash_compressed, s)) =
         compute_vrf(oracle_vrf_sk, &vrf_input);
@@ -264,8 +260,8 @@ async fn run_test() {
         .unwrap()
         .unwrap();
     let mut qdata = oracle_queue_account.data.clone();
-    let queue_acc = QueueAccount::load(&mut qdata[8..]).unwrap();
-    assert_eq!(oracle_queue_account.owner, ephemeral_vrf_api::ID);
+    let queue_acc = QueueAccount::load(&mut qdata[..]).unwrap();
+    assert_eq!(oracle_queue_account.owner, solana_vrf_api::ID);
     assert_eq!(queue_acc.len(), 0);
     assert_eq!(
         oracle_queue_account.lamports,
@@ -297,11 +293,14 @@ async fn run_test() {
     let oracle_queue = Queue::try_from_bytes(&oracle_queue_account.data).unwrap();
     assert_eq!(oracle_queue.len(), 1);
 
-    // Advance slots beyond TTL to make the request expired
+    // Expiry is measured in wall-clock time. Warping slots advances the slot
+    // age, but the warped bank keeps the parent block time, so also push the
+    // Clock timestamp well past the TTL.
     let current_slot = banks.get_sysvar::<Clock>().await.unwrap().slot;
-    context
-        .warp_to_slot(current_slot + QUEUE_TTL_SLOTS + 1)
-        .unwrap();
+    context.warp_to_slot(current_slot + 1_000).unwrap();
+    let mut clock = banks.get_sysvar::<Clock>().await.unwrap();
+    clock.unix_timestamp = clock.epoch_start_timestamp + QUEUE_TTL_SECONDS as i64 + 1_000;
+    context.set_sysvar(&clock);
 
     // Purge expired requests
     let purge_ix = purge_expired_requests(oracle_keypair.pubkey(), 0);
@@ -384,7 +383,7 @@ async fn run_test() {
         .unwrap()
         .unwrap();
     let mut qdata = oracle_queue_account.data.clone();
-    let queue_acc = QueueAccount::load(&mut qdata[8..]).unwrap();
+    let queue_acc = QueueAccount::load(&mut qdata[..]).unwrap();
     assert_eq!(queue_acc.len(), num_requests as usize);
 
     // Increase the slot
@@ -400,7 +399,7 @@ async fn run_test() {
             .unwrap()
             .unwrap();
         let mut qdata2 = oracle_queue_account.data.clone();
-        let queue_acc2 = QueueAccount::load(&mut qdata2[8..]).unwrap();
+        let queue_acc2 = QueueAccount::load(&mut qdata2[..]).unwrap();
         let vrf_input = queue_acc2.get_item_by_index(0).unwrap().id;
 
         // Compute off-chain VRF
@@ -437,7 +436,7 @@ async fn run_test() {
         .unwrap()
         .unwrap();
     let mut qdata = oracle_queue_account.data.clone();
-    let queue_acc = QueueAccount::load(&mut qdata[8..]).unwrap();
+    let queue_acc = QueueAccount::load(&mut qdata[..]).unwrap();
     assert_eq!(queue_acc.len(), 0);
 
     // Close oracle queue.
@@ -539,7 +538,7 @@ pub fn request_randomness_to_queue(
         AccountMeta::new(oracle_queue, false),
         AccountMeta::new_readonly(system_program::ID, false),
         AccountMeta::new_readonly(slot_hashes::ID, false),
-        AccountMeta::new_readonly(ephemeral_vrf_api::ID, false),
+        AccountMeta::new_readonly(solana_vrf_api::ID, false),
     ];
 
     // Instruction data: discriminator + client_seed

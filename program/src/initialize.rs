@@ -1,6 +1,6 @@
-use ephemeral_vrf_api::prelude::*;
+use solana_vrf_api::prelude::*;
 
-/// Process the initialization of the EphemeralVrf program
+/// Process the initialization of the SolanaVrf program
 ///
 /// Accounts:
 ///
@@ -25,14 +25,13 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     oracles_info
         .is_empty()?
         .is_writable()?
-        .has_seeds(&[ORACLES], &ephemeral_vrf_api::ID)?;
+        .has_seeds(&[ORACLES], &solana_vrf_api::ID)?;
 
     let oracles = Oracles::default();
     let oracles_bytes = oracles.to_bytes_with_discriminator()?;
 
     create_pda(
         oracles_info,
-        &ephemeral_vrf_api::ID,
         oracles_bytes.len(),
         &[ORACLES],
         oracles_pda().1,

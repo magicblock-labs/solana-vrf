@@ -1,15 +1,6 @@
 use crate::blockhash_cache::BlockhashCache;
 use crate::oracle::client::OracleClient;
 use anyhow::Result;
-use ephemeral_vrf::vrf::{compute_vrf, verify_vrf};
-use ephemeral_vrf_api::{
-    prelude::{
-        provide_randomness_with_identity_mode, purge_expired_requests, EphemeralVrfError, Queue,
-        QueueAccount, QueueItem, QUEUE_TTL_SLOTS,
-    },
-    state::oracle_queue_pda,
-    ID as PROGRAM_ID,
-};
 use futures_util::future::join_all;
 use futures_util::FutureExt;
 use log::{error, info, trace, warn};
@@ -30,6 +21,15 @@ use solana_sdk::{
     pubkey::Pubkey,
     signature::Signer,
     transaction::{Transaction, TransactionError},
+};
+use solana_vrf::vrf::{compute_vrf, verify_vrf};
+use solana_vrf_api::{
+    prelude::{
+        provide_randomness_with_identity_mode, purge_expired_requests, Queue, QueueAccount,
+        QueueItem, SolanaVrfError,
+    },
+    state::oracle_queue_pda,
+    ID as PROGRAM_ID,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -175,8 +175,9 @@ pub async fn process_oracle_queue(
         let mut current_ids: HashSet<[u8; 32]> = HashSet::new();
         let mut current_slots_by_id: HashMap<[u8; 32], u64> = HashMap::new();
 
-        // Construct a read-only view over the queue items using a local mutable copy
-        let mut acc_bytes = account_bytes[8..].to_vec(); // strip discriminator
+        // Construct a read-only view over the queue items using a local mutable copy.
+        // Pass the full account data; load() skips the discriminator.
+        let mut acc_bytes = account_bytes[..].to_vec();
         let queue_account = match QueueAccount::load(&mut acc_bytes[..]) {
             Ok(q) => q,
             Err(e) => {
@@ -314,7 +315,8 @@ pub async fn process_oracle_queue(
                     let mut use_backoff = false;
                     let transaction = match prepared_transaction.take() {
                         Some(transaction)
-                            if attempt_slot.saturating_sub(item.slot) <= QUEUE_TTL_SLOTS =>
+                            if attempt_slot.saturating_sub(item.slot)
+                                <= oracle_client_for_proc.slot_tracker.ttl_slots() =>
                         {
                             transaction
                         }
@@ -362,17 +364,19 @@ pub async fn process_oracle_queue(
                                 .downcast_ref::<ClientError>()
                                 .and_then(ClientError::get_transaction_error)
                             {
-                                if code == EphemeralVrfError::RandomnessRequestNotFound as u32 {
+                                if code == SolanaVrfError::RandomnessRequestNotFound as u32 {
                                     break;
                                 }
-                                if code
-                                    == EphemeralVrfError::OracleMustProvideInDifferentSlot as u32
-                                {
+                                if code == SolanaVrfError::OracleMustProvideInDifferentSlot as u32 {
                                     use_backoff = false;
                                 }
                                 if code == ANCHOR_CONSTRAINT_ADDRESS_ERROR {
-                                    let purge_slot =
-                                        item.slot.saturating_add(QUEUE_TTL_SLOTS).saturating_add(1);
+                                    let purge_slot = item
+                                        .slot
+                                        .saturating_add(
+                                            oracle_client_for_proc.slot_tracker.ttl_slots(),
+                                        )
+                                        .saturating_add(1);
                                     oracle_client_for_proc
                                         .slot_tracker
                                         .wait_for_slot(purge_slot)
@@ -505,7 +509,7 @@ impl ProcessableItem {
 
         // Check whether the request is expired
         let age = current_slot.saturating_sub(self.0.slot);
-        let is_purge = age > QUEUE_TTL_SLOTS;
+        let is_purge = age > oracle_client.slot_tracker.ttl_slots();
         let ix = if is_purge {
             // Build purge instruction for the queue index
             purge_expired_requests(oracle_client.keypair.pubkey(), queue_meta.index)

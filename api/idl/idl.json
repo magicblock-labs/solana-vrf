@@ -1,17 +1,16 @@
 {
   "address": "Vrf1RNUjXmQGjmQrQLvJHs9SNkvDJEsRVFPkfSQUwGz",
   "metadata": {
-    "name": "ephemeral_vrf",
-    "version": "0.1.0",
+    "name": "solana_vrf",
+    "version": "1.0.0",
     "spec": "0.1.0",
-    "description": "Ephemeral VRF"
+    "description": "SolanaVrf"
   },
   "instructions": [
     {
       "name": "initialize",
-      "discriminator": [
-        1
-      ],
+      "docs": ["Initialize the oracles registry PDA."],
+      "discriminator": [0, 0, 0, 0, 0, 0, 0, 0],
       "accounts": [
         {
           "name": "signer",
@@ -19,19 +18,23 @@
           "signer": true
         },
         {
-          "name": "oraclesPda"
+          "name": "oraclesPda",
+          "writable": true
         },
         {
-          "name": "systemProgram"
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
         }
       ],
       "args": []
     },
     {
-      "name": "initializeOracleQueue",
-      "discriminator": [
-        2
+      "name": "modifyOracle",
+      "docs": [
+        "Add (operation = 0) or remove (operation = 1) an oracle.",
+        "Admin-gated: the signer must be the program upgrade authority."
       ],
+      "discriminator": [1, 0, 0, 0, 0, 0, 0, 0],
       "accounts": [
         {
           "name": "signer",
@@ -39,37 +42,89 @@
           "signer": true
         },
         {
-          "name": "identity"
+          "name": "oraclesPda",
+          "writable": true
         },
         {
-          "name": "oracleDataPda"
+          "name": "oracleDataPda",
+          "writable": true
         },
         {
-          "name": "oracleQueuePda"
+          "name": "programData"
         },
         {
-          "name": "systemProgram"
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
         }
       ],
       "args": [
         {
-          "name": "index",
+          "name": "identity",
+          "type": "pubkey"
+        },
+        {
+          "name": "oraclePubkey",
+          "type": {
+            "array": ["u8", 32]
+          }
+        },
+        {
+          "name": "operation",
           "type": "u8"
         }
       ]
     },
     {
-      "name": "requestRandomness",
-      "discriminator": [
-        3,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
+      "name": "initializeOracleQueue",
+      "docs": [
+        "Create an oracle queue PDA. Repeated in one transaction to allocate in",
+        "10240-byte chunks up to targetSize (capped at MAX_QUEUE_ACCOUNT_SIZE, 512 KiB)."
       ],
+      "discriminator": [2, 0, 0, 0, 0, 0, 0, 0],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "oracleIdentity",
+          "signer": true
+        },
+        {
+          "name": "oracleDataPda",
+          "writable": true
+        },
+        {
+          "name": "oracleQueuePda",
+          "writable": true
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "targetSize",
+          "type": "u32"
+        },
+        {
+          "name": "index",
+          "type": "u8"
+        },
+        {
+          "name": "padding",
+          "type": {
+            "array": ["u8", 3]
+          }
+        }
+      ]
+    },
+    {
+      "name": "requestHighPriorityRandomness",
+      "docs": ["Request randomness at the high-priority fee, using the legacy global program identity."],
+      "discriminator": [3, 0, 0, 0, 0, 0, 0, 0],
       "accounts": [
         {
           "name": "caller",
@@ -77,7 +132,8 @@
           "signer": true
         },
         {
-          "name": "programIdentity"
+          "name": "programIdentity",
+          "signer": true
         },
         {
           "name": "oracleQueue",
@@ -88,7 +144,7 @@
           "address": "11111111111111111111111111111111"
         },
         {
-          "name": "Slot Hashes",
+          "name": "slotHashes",
           "address": "SysvarS1otHashes111111111111111111111111111"
         }
       ],
@@ -96,10 +152,7 @@
         {
           "name": "callerSeed",
           "type": {
-            "array": [
-              "u8",
-              32
-            ]
+            "array": ["u8", 32]
           }
         },
         {
@@ -113,11 +166,11 @@
           }
         },
         {
-          "name": "account_metas",
+          "name": "callbackAccountsMetas",
           "type": {
             "vec": {
               "defined": {
-                "name": "AccountMeta"
+                "name": "SerializableAccountMeta"
               }
             }
           }
@@ -132,9 +185,11 @@
     },
     {
       "name": "provideRandomness",
-      "discriminator": [
-        4, 13, 203, 241, 93, 225, 85, 54
+      "docs": [
+        "Oracle fulfills a request: verifies the VRF proof and CPIs into the",
+        "callback program. Remaining accounts are the callback's accounts."
       ],
+      "discriminator": [4, 0, 0, 0, 0, 0, 0, 0],
       "accounts": [
         {
           "name": "oracleIdentity",
@@ -145,36 +200,53 @@
           "name": "vrfProgramIdentity"
         },
         {
-          "name": "oracleDataPda",
-          "writable": true
+          "name": "oracleDataPda"
         },
         {
           "name": "oracleQueue",
           "writable": true
         },
         {
-          "name": "callbackProgramId"
-        },
-        {
-          "name": "systemProgram"
-        },
-        {
-          "name": "accountCallback",
-          "writable": true
+          "name": "callbackProgram"
         }
       ],
       "args": [
         {
-          "name": "rndSeed",
-          "type": "bytes"
+          "name": "input",
+          "type": {
+            "array": ["u8", 32]
+          }
+        },
+        {
+          "name": "output",
+          "type": {
+            "array": ["u8", 32]
+          }
+        },
+        {
+          "name": "commitmentBaseCompressed",
+          "type": {
+            "array": ["u8", 32]
+          }
+        },
+        {
+          "name": "commitmentHashCompressed",
+          "type": {
+            "array": ["u8", 32]
+          }
+        },
+        {
+          "name": "scalar",
+          "type": {
+            "array": ["u8", 32]
+          }
         }
       ]
     },
     {
       "name": "delegateOracleQueue",
-      "discriminator": [
-        5
-      ],
+      "docs": ["Delegate a never-used oracle queue to the ephemeral rollups delegation program."],
+      "discriminator": [5, 0, 0, 0, 0, 0, 0, 0],
       "accounts": [
         {
           "name": "signer",
@@ -182,25 +254,31 @@
           "signer": true
         },
         {
-          "name": "queue"
+          "name": "queue",
+          "writable": true
         },
         {
-          "name": "buffer"
+          "name": "buffer",
+          "writable": true
         },
         {
-          "name": "delegationRecord"
+          "name": "delegationRecord",
+          "writable": true
         },
         {
-          "name": "delegationMetadata"
+          "name": "delegationMetadata",
+          "writable": true
         },
         {
-          "name": "delegationProgramId"
+          "name": "delegationProgram"
         },
         {
-          "name": "programId"
+          "name": "ownerProgram",
+          "address": "Vrf1RNUjXmQGjmQrQLvJHs9SNkvDJEsRVFPkfSQUwGz"
         },
         {
-          "name": "systemProgram"
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
         }
       ],
       "args": [
@@ -211,29 +289,263 @@
       ]
     },
     {
-      "name": "undelegateOracleQueue",
-      "discriminator": [
-        6
-      ],
+      "name": "closeOracleQueue",
+      "docs": ["Close an empty oracle queue and reclaim its rent. Oracle-gated."],
+      "discriminator": [7, 0, 0, 0, 0, 0, 0, 0],
       "accounts": [
         {
-          "name": "signer",
+          "name": "oracleIdentity",
           "writable": true,
           "signer": true
         },
         {
-          "name": "queue"
+          "name": "oracleDataPda",
+          "writable": true
         },
         {
-          "name": "magicContextId"
-        },
-        {
-          "name": "magicProgramId"
+          "name": "oracleQueue",
+          "writable": true
         }
       ],
       "args": [
         {
           "name": "index",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "requestRandomness",
+      "docs": ["Request randomness at the base fee, using the legacy global program identity."],
+      "discriminator": [8, 0, 0, 0, 0, 0, 0, 0],
+      "accounts": [
+        {
+          "name": "caller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "programIdentity",
+          "signer": true
+        },
+        {
+          "name": "oracleQueue",
+          "writable": true
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "slotHashes",
+          "address": "SysvarS1otHashes111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "callerSeed",
+          "type": {
+            "array": ["u8", 32]
+          }
+        },
+        {
+          "name": "callbackProgramId",
+          "type": "pubkey"
+        },
+        {
+          "name": "callbackDiscriminator",
+          "type": {
+            "vec": "u8"
+          }
+        },
+        {
+          "name": "callbackAccountsMetas",
+          "type": {
+            "vec": {
+              "defined": {
+                "name": "SerializableAccountMeta"
+              }
+            }
+          }
+        },
+        {
+          "name": "callbackArgs",
+          "type": {
+            "vec": "u8"
+          }
+        }
+      ]
+    },
+    {
+      "name": "purgeExpiredRequests",
+      "docs": ["Remove requests older than QUEUE_TTL_SECONDS from a queue. Permissionless."],
+      "discriminator": [9, 0, 0, 0, 0, 0, 0, 0],
+      "accounts": [
+        {
+          "name": "oracleIdentity",
+          "writable": true
+        },
+        {
+          "name": "oracleQueue",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "index",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "requestRandomnessScoped",
+      "docs": ["Request randomness at the base fee, using the per-callback scoped identity PDA."],
+      "discriminator": [10, 0, 0, 0, 0, 0, 0, 0],
+      "accounts": [
+        {
+          "name": "caller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "programIdentity",
+          "signer": true
+        },
+        {
+          "name": "oracleQueue",
+          "writable": true
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "slotHashes",
+          "address": "SysvarS1otHashes111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "callerSeed",
+          "type": {
+            "array": ["u8", 32]
+          }
+        },
+        {
+          "name": "callbackProgramId",
+          "type": "pubkey"
+        },
+        {
+          "name": "callbackDiscriminator",
+          "type": {
+            "vec": "u8"
+          }
+        },
+        {
+          "name": "callbackAccountsMetas",
+          "type": {
+            "vec": {
+              "defined": {
+                "name": "SerializableAccountMeta"
+              }
+            }
+          }
+        },
+        {
+          "name": "callbackArgs",
+          "type": {
+            "vec": "u8"
+          }
+        }
+      ]
+    },
+    {
+      "name": "requestHighPriorityRandomnessScoped",
+      "docs": ["Request randomness at the high-priority fee, using the per-callback scoped identity PDA."],
+      "discriminator": [11, 0, 0, 0, 0, 0, 0, 0],
+      "accounts": [
+        {
+          "name": "caller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "programIdentity",
+          "signer": true
+        },
+        {
+          "name": "oracleQueue",
+          "writable": true
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "slotHashes",
+          "address": "SysvarS1otHashes111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "callerSeed",
+          "type": {
+            "array": ["u8", 32]
+          }
+        },
+        {
+          "name": "callbackProgramId",
+          "type": "pubkey"
+        },
+        {
+          "name": "callbackDiscriminator",
+          "type": {
+            "vec": "u8"
+          }
+        },
+        {
+          "name": "callbackAccountsMetas",
+          "type": {
+            "vec": {
+              "defined": {
+                "name": "SerializableAccountMeta"
+              }
+            }
+          }
+        },
+        {
+          "name": "callbackArgs",
+          "type": {
+            "vec": "u8"
+          }
+        }
+      ]
+    },
+    {
+      "name": "setQueuePaused",
+      "docs": [
+        "Pause (paused = 1) or unpause (paused = 0) an oracle queue; other values",
+        "are rejected. A paused queue rejects new requests so it can be drained",
+        "and closed. Oracle-gated."
+      ],
+      "discriminator": [12, 0, 0, 0, 0, 0, 0, 0],
+      "accounts": [
+        {
+          "name": "oracleIdentity",
+          "signer": true
+        },
+        {
+          "name": "oracleQueue",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "index",
+          "type": "u8"
+        },
+        {
+          "name": "paused",
           "type": "u8"
         }
       ]
@@ -254,11 +566,56 @@
       "code": 2,
       "name": "InvalidProof",
       "msg": "Invalid proof"
+    },
+    {
+      "code": 3,
+      "name": "InvalidCallbackAccounts",
+      "msg": "Invalid callback accounts"
+    },
+    {
+      "code": 5,
+      "name": "InvalidQueueIndex",
+      "msg": "Invalid queue index"
+    },
+    {
+      "code": 8,
+      "name": "ArgumentSizeTooLarge",
+      "msg": "Argument size exceeds the maximum allowed"
+    },
+    {
+      "code": 11,
+      "name": "QueueNotEmpty",
+      "msg": "Queue is not empty - cannot close queue with pending requests"
+    },
+    {
+      "code": 12,
+      "name": "InvalidOracleIdentity",
+      "msg": "Invalid oracle identity"
+    },
+    {
+      "code": 13,
+      "name": "OracleMustProvideInDifferentSlot",
+      "msg": "Oracle must fulfill in a different slot than the request slot"
+    },
+    {
+      "code": 14,
+      "name": "QueueAlreadyInUse",
+      "msg": "Queue has already been used and can no longer be delegated"
+    },
+    {
+      "code": 15,
+      "name": "QueuePaused",
+      "msg": "Queue is paused and not accepting new requests"
+    },
+    {
+      "code": 16,
+      "name": "QueueSizeTooLarge",
+      "msg": "Queue account size exceeds the maximum allowed"
     }
   ],
   "types": [
     {
-      "name": "AccountMeta",
+      "name": "SerializableAccountMeta",
       "type": {
         "kind": "struct",
         "fields": [

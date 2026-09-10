@@ -1,4 +1,4 @@
-use ephemeral_vrf_api::prelude::*;
+use solana_vrf_api::prelude::*;
 
 /// Process the closing of an Oracle queue account
 ///
@@ -16,7 +16,7 @@ use ephemeral_vrf_api::prelude::*;
 /// - The Oracle (account 0) must be a signer.
 /// - The Oracle data account (account 1) must be a valid PDA with seeds [ORACLE_DATA, oracle.key].
 /// - The Oracle queue (account 2) must be a valid PDA with seeds [QUEUE, oracle.key, index].
-/// - The queue account must be owned by the ephemeral VRF program.
+/// - The queue account must be owned by the SolanaVrf program.
 /// - The queue must be empty (no unprocessed requests).
 ///
 /// Process:
@@ -25,7 +25,7 @@ use ephemeral_vrf_api::prelude::*;
 /// 2. Verify the Oracle account is a signer.
 /// 3. Validate the Oracle data and queue account PDA seeds with the provided index.
 /// 4. Ensure the queue is empty.
-/// 5. Decrement Oracle.open_queue and close the queue account, transferring lamports to the Oracle.
+/// 5. Decrement Oracle.open_queues and close the queue account, transferring lamports to the Oracle.
 pub fn process_close_oracle_queue(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     // Parse args.
     let args = CloseOracleQueue::try_from_bytes(data)?;
@@ -40,19 +40,19 @@ pub fn process_close_oracle_queue(accounts: &[AccountInfo], data: &[u8]) -> Prog
     // Validate Oracle data PDA
     oracle_data_info
         .is_writable()?
-        .has_owner(&ephemeral_vrf_api::ID)?
+        .has_owner(&solana_vrf_api::ID)?
         .has_seeds(
             &[ORACLE_DATA, oracle_info.key.to_bytes().as_ref()],
-            &ephemeral_vrf_api::ID,
+            &solana_vrf_api::ID,
         )?;
 
     // Validate queue PDA
     oracle_queue_info
         .is_writable()?
-        .has_owner(&ephemeral_vrf_api::ID)?
+        .has_owner(&solana_vrf_api::ID)?
         .has_seeds(
             &[QUEUE, oracle_info.key.to_bytes().as_ref(), &[args.index]],
-            &ephemeral_vrf_api::ID,
+            &solana_vrf_api::ID,
         )?;
 
     // Ensure the queue has no pending items before closing.
@@ -60,16 +60,15 @@ pub fn process_close_oracle_queue(accounts: &[AccountInfo], data: &[u8]) -> Prog
         // Borrow data and load QueueAccount view to check emptiness
         let mut data = oracle_queue_info.try_borrow_mut_data()?;
         Queue::try_from_bytes(&data)?;
-        let queue_data = &mut data[8..];
-        let queue_acc = QueueAccount::load(queue_data)?;
+        let queue_acc = QueueAccount::load(&mut data)?;
         if !queue_acc.is_empty() {
-            return Err(EphemeralVrfError::QueueNotEmpty.into());
+            return Err(SolanaVrfError::QueueNotEmpty.into());
         }
     }
 
     // Decrement oracle's open queue count
-    let mut oracle_data_mut = oracle_data_info.as_account_mut::<Oracle>(&ephemeral_vrf_api::ID)?;
-    oracle_data_mut.open_queue = oracle_data_mut.open_queue.saturating_sub(1);
+    let mut oracle_data_mut = oracle_data_info.as_account_mut::<Oracle>(&solana_vrf_api::ID)?;
+    oracle_data_mut.open_queues = oracle_data_mut.open_queues.saturating_sub(1);
 
     close_account(oracle_queue_info, oracle_info)?;
 

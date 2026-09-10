@@ -1,8 +1,7 @@
-use crate::prelude::{AccountDiscriminator, EphemeralVrfError};
+use crate::prelude::{AccountDiscriminator, SolanaVrfError};
 use crate::steel::{AccountMeta, Pod, ProgramError, Pubkey, Zeroable};
 use borsh::{BorshDeserialize, BorshSerialize};
 use core::mem::{size_of, size_of_val};
-use core::ptr;
 
 const MAX_CALLBACK_ACCOUNTS: usize = 25;
 
@@ -18,7 +17,11 @@ pub struct Queue {
     pub cursor: u32,
     /// Logical index or shard id of the queue.
     pub index: u8,
-    pub _padding: [u8; 3],
+    /// 1 = paused: the oracle has stopped accepting new requests so the queue
+    /// can be drained and closed. 0 = active. Reuses former padding, so
+    /// existing (zeroed) accounts read as active.
+    pub paused: u8,
+    pub _padding: [u8; 2],
 }
 
 /// Single queue entry. This is written into the variable region and
@@ -46,9 +49,6 @@ impl QueueItem {
     pub fn callback_discriminator<'a>(&self, acc: &'a [u8]) -> &'a [u8] {
         let start = self.callback_discriminator_offset as usize;
         let end = start + self.callback_discriminator_len as usize;
-        if end > acc.len() {
-            return &[];
-        }
         &acc[start..end]
     }
 
@@ -58,21 +58,14 @@ impl QueueItem {
         let byte_len = count * size_of::<CompactAccountMeta>();
         let end = start + byte_len;
 
-        if end > acc.len() || start > end {
-            return &[];
-        }
-
         let bytes = &acc[start..end];
 
-        unsafe { core::slice::from_raw_parts(bytes.as_ptr() as *const CompactAccountMeta, count) }
+        bytemuck::cast_slice(bytes)
     }
 
     pub fn callback_args<'a>(&self, acc: &'a [u8]) -> &'a [u8] {
         let start = self.args_offset as usize;
         let end = start + self.args_len as usize;
-        if end > acc.len() || start > end {
-            return &[];
-        }
         &acc[start..end]
     }
 }
@@ -143,24 +136,37 @@ struct QueueItemLayout {
 
 impl<'a> QueueAccount<'a> {
     #[inline]
-    fn align_up(x: usize, align: usize) -> usize {
+    fn align_up(x: usize) -> usize {
+        let align = core::mem::align_of::<QueueItem>();
         (x + align - 1) & !(align - 1)
     }
 
     #[inline]
     fn items_start() -> usize {
-        Self::align_up(size_of::<Queue>(), core::mem::align_of::<QueueItem>())
+        Self::align_up(size_of::<Queue>())
     }
 
-    /// Load from an account data slice (without discriminator).
-    /// Caller is responsible for stripping the 8-byte discriminator if present.
+    /// Load from full account data, including the 8-byte discriminator.
+    /// The discriminator is validated and skipped here so call sites pass the
+    /// account data as-is and cannot mis-slice the offset. Validating it also
+    /// makes a caller that mistakenly passes already-stripped data (starting at
+    /// the header) fail loudly instead of silently reading the wrong offset.
     pub fn load(acc: &'a mut [u8]) -> Result<Self, ProgramError> {
+        if acc.len() < 8 {
+            return Err(ProgramError::InvalidAccountData);
+        }
+        if AccountDiscriminator::Queue.to_bytes() != acc[..8] {
+            return Err(ProgramError::InvalidAccountData);
+        }
+        // Skip the 8-byte account discriminator.
+        let (_discriminator, body) = acc.split_at_mut(8);
+
         let header_size = size_of::<Queue>();
-        if acc.len() < header_size {
+        if body.len() < header_size {
             return Err(ProgramError::InvalidAccountData);
         }
 
-        let (header_bytes, _rest) = acc.split_at_mut(header_size);
+        let (header_bytes, _rest) = body.split_at_mut(header_size);
         // Validate alignment and size using a safe checked conversion first
         if bytemuck::try_from_bytes_mut::<Queue>(header_bytes).is_err() {
             return Err(ProgramError::InvalidAccountData);
@@ -173,66 +179,79 @@ impl<'a> QueueAccount<'a> {
             header.cursor = Self::items_start() as u32;
         }
 
-        Ok(Self { header, acc })
+        Ok(Self { header, acc: body })
     }
 
     #[inline]
     fn read_item_unaligned(bytes: &[u8]) -> QueueItem {
-        unsafe { ptr::read_unaligned(bytes.as_ptr() as *const QueueItem) }
+        bytemuck::pod_read_unaligned(bytes)
     }
 
     #[inline]
     fn write_item_unaligned(dst: &mut [u8], item: &QueueItem) {
-        let src = unsafe {
-            core::slice::from_raw_parts(
-                item as *const QueueItem as *const u8,
-                size_of::<QueueItem>(),
-            )
-        };
-        dst.copy_from_slice(src);
+        dst.copy_from_slice(bytemuck::bytes_of(item));
     }
 
     #[inline]
-    fn item_next(cursor: usize, item: &QueueItem, align: usize) -> usize {
+    fn item_next(cursor: usize, item: &QueueItem) -> usize {
         let metas_bytes = (item.metas_len as usize) * size_of::<CompactAccountMeta>();
         let item_end = cursor
             + size_of::<QueueItem>()
             + (item.callback_discriminator_len as usize)
             + metas_bytes
             + (item.args_len as usize);
-        Self::align_up(item_end, align)
+        Self::align_up(item_end)
     }
 
-    fn scan_for_reusable_span(&self, required_span: usize) -> QueueScan {
+    /// Walk the queue items once, calling `visit(logical_index, item_pos, next, item)`
+    /// for each item, where `logical_index` is the count of used items seen so far,
+    /// `item_pos` is the item's byte offset and `next` is the byte offset of the
+    /// following item. Returns early with the first `Some(_)` a visit produces.
+    ///
+    /// Centralizes the raw byte-offset / unaligned-read / alignment traversal that
+    /// every queue scan needs, so the delicate logic lives in exactly one place.
+    fn scan_items<R>(
+        &self,
+        mut visit: impl FnMut(usize, usize, usize, &QueueItem) -> Option<R>,
+    ) -> Option<R> {
+        let mut used_index = 0usize;
         let mut cursor = Self::items_start();
         let end = core::cmp::min(self.acc.len(), self.header.cursor as usize);
-        let align = core::mem::align_of::<QueueItem>();
         let item_size = size_of::<QueueItem>();
-        let mut last_used_end_aligned = Self::items_start();
-        let mut current_index = 0usize;
-        let mut reusable_span = None;
 
         while cursor + item_size <= end {
             let bytes = &self.acc[cursor..cursor + item_size];
             let item = Self::read_item_unaligned(bytes);
-            let next = Self::item_next(cursor, &item, align);
+            let next = Self::item_next(cursor, &item);
 
-            if next <= cursor {
-                break;
+            if let Some(result) = visit(used_index, cursor, next, &item) {
+                return Some(result);
             }
-
             if item.used == 1 {
-                last_used_end_aligned = next;
-                current_index += 1;
-            } else if reusable_span.is_none() && next - cursor == required_span {
-                reusable_span = Some(ReusableSpan {
-                    item_pos: cursor,
-                    logical_index: current_index,
-                });
+                used_index += 1;
             }
 
             cursor = next;
         }
+
+        None
+    }
+
+    fn scan_for_reusable_span(&self, required_span: usize) -> QueueScan {
+        let mut last_used_end_aligned = Self::items_start();
+        let mut reusable_span = None;
+
+        self.scan_items(|logical_index, item_pos, next, item| {
+            if item.used == 1 {
+                last_used_end_aligned = next;
+            } else if reusable_span.is_none() && next - item_pos == required_span {
+                reusable_span = Some(ReusableSpan {
+                    item_pos,
+                    logical_index,
+                });
+            }
+            None::<()>
+        });
 
         QueueScan {
             last_used_end_aligned,
@@ -261,8 +280,7 @@ impl<'a> QueueAccount<'a> {
 
         self.acc[disc_off..metas_off].copy_from_slice(discriminator);
 
-        let metas_bytes =
-            unsafe { core::slice::from_raw_parts(metas.as_ptr() as *const u8, metas_bytes_len) };
+        let metas_bytes: &[u8] = bytemuck::cast_slice(metas);
         self.acc[metas_off..args_off].copy_from_slice(metas_bytes);
         self.acc[args_off..args_end].copy_from_slice(args);
 
@@ -287,7 +305,7 @@ impl<'a> QueueAccount<'a> {
         args: &[u8],
     ) -> Result<QueueItemLayout, ProgramError> {
         if metas.len() > MAX_CALLBACK_ACCOUNTS || args.len() > 512 {
-            return Err(ProgramError::from(EphemeralVrfError::ArgumentSizeTooLarge));
+            return Err(ProgramError::from(SolanaVrfError::ArgumentSizeTooLarge));
         }
 
         let total_needed = size_of::<QueueItem>()
@@ -297,64 +315,30 @@ impl<'a> QueueAccount<'a> {
 
         Ok(QueueItemLayout {
             total_needed,
-            required_span: Self::align_up(total_needed, core::mem::align_of::<QueueItem>()),
+            required_span: Self::align_up(total_needed),
         })
     }
 
     /// Recompute the end of the last used item and shrink the cursor to it,
     /// effectively removing all trailing holes. If no items are used, reset to items_start().
     fn trim_trailing_holes(&mut self) {
-        let mut cursor = Self::items_start();
-        let end = core::cmp::min(self.acc.len(), self.header.cursor as usize);
-        let align = core::mem::align_of::<QueueItem>();
-
-        // Default to empty queue start; if we see used items we’ll update this
+        // Default to empty queue start; if we see used items we’ll update this.
         let mut last_used_end_aligned = Self::items_start();
 
-        while cursor + size_of::<QueueItem>() <= end {
-            let bytes = &self.acc[cursor..cursor + size_of::<QueueItem>()];
-            let item = Self::read_item_unaligned(bytes);
-
-            let next = Self::item_next(cursor, &item, align);
-
+        self.scan_items(|_, _, next, item| {
             if item.used == 1 {
                 last_used_end_aligned = next;
             }
+            None::<()>
+        });
 
-            // Corruption guard
-            if next <= cursor {
-                break;
-            }
-            cursor = next;
-        }
-
-        // If nothing was used, this becomes items_start(); otherwise end of last used.
-        let new_cursor = last_used_end_aligned;
-        if (new_cursor as u32) < self.header.cursor {
-            self.header.cursor = new_cursor as u32;
+        // If nothing was used, this stays items_start(); otherwise end of last used.
+        if (last_used_end_aligned as u32) < self.header.cursor {
+            self.header.cursor = last_used_end_aligned as u32;
         }
     }
 
-    pub fn insertion_position(
-        &self,
-        discriminator: &[u8],
-        metas: &[CompactAccountMeta],
-        args: &[u8],
-    ) -> Result<u32, ProgramError> {
-        let layout = Self::item_layout(discriminator, metas, args)?;
-        let scan = self.scan_for_reusable_span(layout.required_span);
-        let cursor = core::cmp::min(self.header.cursor as usize, scan.last_used_end_aligned);
-
-        if let Some(span) = scan.reusable_span {
-            if span.item_pos < cursor {
-                return Ok(span.item_pos as u32);
-            }
-        }
-
-        Ok(Self::align_up(cursor, core::mem::align_of::<QueueItem>()) as u32)
-    }
-
-    /// Append a new item to the queue.
+    /// Append a new item to the queue with a fixed id.
     pub fn add_item(
         &mut self,
         base_item: &QueueItem,
@@ -362,8 +346,25 @@ impl<'a> QueueAccount<'a> {
         metas: &[CompactAccountMeta],
         args: &[u8],
     ) -> Result<usize, ProgramError> {
+        let id = base_item.id;
+        self.add_item_with_id(base_item, discriminator, metas, args, move |_pos| id)
+    }
+
+    /// Append a new item, deriving its id from the byte position it is written to.
+    ///
+    /// `id_from_pos(item_pos)` is invoked exactly once, with the final insertion
+    /// offset, and its result becomes the item's `id`. This lets a caller bind the
+    /// id to the insertion position in a single scan, instead of computing the
+    /// position up front (a first scan) and then writing the item (a second scan).
+    pub fn add_item_with_id(
+        &mut self,
+        base_item: &QueueItem,
+        discriminator: &[u8],
+        metas: &[CompactAccountMeta],
+        args: &[u8],
+        mut id_from_pos: impl FnMut(u32) -> [u8; 32],
+    ) -> Result<usize, ProgramError> {
         let layout = Self::item_layout(discriminator, metas, args)?;
-        let items_align = core::mem::align_of::<QueueItem>();
         let scan = self.scan_for_reusable_span(layout.required_span);
 
         if (scan.last_used_end_aligned as u32) < self.header.cursor {
@@ -372,20 +373,22 @@ impl<'a> QueueAccount<'a> {
 
         if let Some(span) = scan.reusable_span {
             if span.item_pos < self.header.cursor as usize {
-                self.write_item_at(span.item_pos, base_item, discriminator, metas, args)?;
+                let mut item = *base_item;
+                item.id = id_from_pos(span.item_pos as u32);
+                self.write_item_at(span.item_pos, &item, discriminator, metas, args)?;
                 self.header.item_count = self.header.item_count.saturating_add(1);
                 return Ok(span.logical_index);
             }
         }
 
-        // Ensure we have enough room in the account before mutating any state
-        let aligned = Self::align_up(self.header.cursor as usize, items_align);
+        // `aligned` is where the item will start (cursor may have been advanced
+        // already). Ensure we have enough room before mutating any state.
+        let aligned = Self::align_up(self.header.cursor as usize);
         if aligned.saturating_add(layout.total_needed) > self.acc.len() {
             return Err(ProgramError::AccountDataTooSmall);
         }
 
-        // Ensure items area starts at aligned offset; cursor may have been advanced already
-        let aligned = Self::align_up(self.header.cursor as usize, items_align);
+        // Ensure items area starts at the aligned offset.
         if aligned != self.header.cursor as usize {
             let start = self.header.cursor as usize;
             let end = aligned;
@@ -396,7 +399,9 @@ impl<'a> QueueAccount<'a> {
 
         // Reserve space for the item so items are contiguous
         let item_pos = self.header.cursor as usize;
-        let end = self.write_item_at(item_pos, base_item, discriminator, metas, args)?;
+        let mut item = *base_item;
+        item.id = id_from_pos(item_pos as u32);
+        let end = self.write_item_at(item_pos, &item, discriminator, metas, args)?;
         self.header.cursor = end as u32;
 
         // Item index is logical position among used items.
@@ -407,125 +412,85 @@ impl<'a> QueueAccount<'a> {
 
     /// Iterate over all used items.
     pub fn iter_items(&self) -> impl Iterator<Item = QueueItem> + '_ {
-        let mut cursor = Self::items_start();
-        let end = core::cmp::min(self.acc.len(), self.header.cursor as usize);
-        let align = core::mem::align_of::<QueueItem>();
-
         let mut out = Vec::new();
-
-        while cursor + size_of::<QueueItem>() <= end {
-            let bytes = &self.acc[cursor..cursor + size_of::<QueueItem>()];
-            let item = Self::read_item_unaligned(bytes);
-
+        self.scan_items(|_, _, _, item| {
             if item.used == 1 {
-                out.push(item);
+                out.push(*item);
             }
-
-            let next = Self::item_next(cursor, &item, align);
-
-            // Prevent infinite loop in case of corrupted lengths
-            if next <= cursor {
-                break;
-            }
-            cursor = next;
-        }
-
+            None::<()>
+        });
         out.into_iter()
     }
 
     /// Find the nth used item (logical index) and return its value.
     pub fn get_item_by_index(&self, index: usize) -> Option<QueueItem> {
-        let mut current = 0usize;
-
-        let mut cursor = Self::items_start();
-        let end = core::cmp::min(self.acc.len(), self.header.cursor as usize);
-        let align = core::mem::align_of::<QueueItem>();
-
-        while cursor + size_of::<QueueItem>() <= end {
-            let bytes = &self.acc[cursor..cursor + size_of::<QueueItem>()];
-            let item = Self::read_item_unaligned(bytes);
-
-            if item.used == 1 {
-                if current == index {
-                    return Some(item);
-                }
-                current += 1;
-            }
-
-            let next = Self::item_next(cursor, &item, align);
-            if next <= cursor {
-                break;
-            }
-            cursor = next;
-        }
-
-        None
+        self.scan_items(|logical_index, _, _, item| {
+            (item.used == 1 && logical_index == index).then_some(*item)
+        })
     }
 
     /// Remove the nth used item (logical index).
     pub fn remove_item(&mut self, index: usize) -> Result<QueueItem, ProgramError> {
-        let mut current = 0usize;
+        let (item_pos, mut item) = self
+            .scan_items(|logical_index, item_pos, _, item| {
+                (item.used == 1 && logical_index == index).then_some((item_pos, *item))
+            })
+            .ok_or::<ProgramError>(SolanaVrfError::InvalidQueueIndex.into())?;
 
+        // Logically remove: clear the used flag in place and trim trailing holes.
+        item.used = 0;
+        self.header.item_count = self.header.item_count.saturating_sub(1);
+        let bytes = &mut self.acc[item_pos..item_pos + size_of::<QueueItem>()];
+        Self::write_item_unaligned(bytes, &item);
+        self.trim_trailing_holes();
+
+        Ok(item)
+    }
+
+    /// Remove in a single pass all used items matching `pred`, invoking
+    /// `on_removed` for each removed item. Trailing holes are trimmed once at
+    /// the end. Runs in O(n) regardless of how many items are removed, so the
+    /// purge can never be priced out of the compute budget.
+    pub fn remove_items_matching<P, R>(&mut self, mut pred: P, mut on_removed: R)
+    where
+        P: FnMut(&QueueItem) -> bool,
+        R: FnMut(&QueueItem),
+    {
         let mut cursor = Self::items_start();
         let end = core::cmp::min(self.acc.len(), self.header.cursor as usize);
-        let align = core::mem::align_of::<QueueItem>();
+        let mut last_used_end_aligned = Self::items_start();
 
         while cursor + size_of::<QueueItem>() <= end {
             let bytes = &mut self.acc[cursor..cursor + size_of::<QueueItem>()];
             let mut item = Self::read_item_unaligned(bytes);
+            let next = Self::item_next(cursor, &item);
 
             if item.used == 1 {
-                if current == index {
-                    // Logically remove
+                if pred(&item) {
+                    // Logically remove in place; offsets stay valid.
                     item.used = 0;
-                    self.header.item_count = self.header.item_count.saturating_sub(1);
-                    // Write back modified item using unaligned write
                     Self::write_item_unaligned(bytes, &item);
-
-                    self.trim_trailing_holes();
-
-                    return Ok(item);
+                    self.header.item_count = self.header.item_count.saturating_sub(1);
+                    on_removed(&item);
+                } else {
+                    last_used_end_aligned = next;
                 }
-                current += 1;
             }
 
-            let next = Self::item_next(cursor, &item, align);
-            if next <= cursor {
-                break;
-            }
             cursor = next;
         }
 
-        Err(EphemeralVrfError::InvalidQueueIndex.into())
+        // Trim trailing holes once.
+        if (last_used_end_aligned as u32) < self.header.cursor {
+            self.header.cursor = last_used_end_aligned as u32;
+        }
     }
 
     /// Find first used item by id, returning its logical index and value.
     pub fn find_item_by_id(&self, id: &[u8; 32]) -> Option<(usize, QueueItem)> {
-        let mut current = 0usize;
-
-        let mut cursor = Self::items_start();
-        let end = core::cmp::min(self.acc.len(), self.header.cursor as usize);
-        let align = core::mem::align_of::<QueueItem>();
-
-        while cursor + size_of::<QueueItem>() <= end {
-            let bytes = &self.acc[cursor..cursor + size_of::<QueueItem>()];
-            let item = Self::read_item_unaligned(bytes);
-
-            if item.used == 1 {
-                if &item.id == id {
-                    return Some((current, item));
-                }
-                current += 1;
-            }
-
-            let next = Self::item_next(cursor, &item, align);
-            if next <= cursor {
-                break;
-            }
-            cursor = next;
-        }
-
-        None
+        self.scan_items(|logical_index, _, _, item| {
+            (item.used == 1 && &item.id == id).then_some((logical_index, *item))
+        })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -609,9 +574,10 @@ mod tests {
         let args = [3u8; 48];
         let span = QueueAccount::align_up(
             size_of::<QueueItem>() + discriminator.len() + size_of_val(&metas) + args.len(),
-            core::mem::align_of::<QueueItem>(),
         );
-        let mut data = vec![0u8; QueueAccount::items_start() + (span * 4)];
+        // 8 leading bytes for the account discriminator, which load() validates and skips.
+        let mut data = vec![0u8; 8 + QueueAccount::items_start() + (span * 4)];
+        data[..8].copy_from_slice(&AccountDiscriminator::Queue.to_bytes());
         let mut queue = QueueAccount::load(&mut data).unwrap();
 
         queue
@@ -629,29 +595,21 @@ mod tests {
         let removed_pos = removed.callback_discriminator_offset as usize - size_of::<QueueItem>();
         assert_eq!(removed.id, [1; 32]);
         assert_eq!(queue.header.cursor, cursor_after_fill);
-        assert_eq!(
-            queue
-                .insertion_position(&discriminator, &metas, &args)
-                .unwrap() as usize,
-            removed_pos
-        );
 
+        // The next insertion reuses the freed span: the id is derived from the
+        // exact byte position it is written to, which is the removed item's slot.
+        let mut reused_pos = None;
         let reused_index = queue
-            .add_item(&test_item(9), &discriminator, &metas, &args)
+            .add_item_with_id(&test_item(9), &discriminator, &metas, &args, |pos| {
+                reused_pos = Some(pos as usize);
+                [9; 32]
+            })
             .unwrap();
 
+        assert_eq!(reused_pos, Some(removed_pos));
         assert_eq!(reused_index, 1);
         assert_eq!(queue.header.cursor, cursor_after_fill);
         assert_eq!(queue.len(), 3);
-        assert_eq!(
-            queue
-                .insertion_position(&discriminator, &metas, &args)
-                .unwrap(),
-            QueueAccount::align_up(
-                cursor_after_fill as usize,
-                core::mem::align_of::<QueueItem>()
-            ) as u32
-        );
 
         let reused = queue.get_item_by_index(1).unwrap();
         assert_eq!(reused.id, [9; 32]);
@@ -661,6 +619,84 @@ mod tests {
 
         let tail = queue.get_item_by_index(2).unwrap();
         assert_eq!(tail.id, [2; 32]);
+
+        // With no holes left, the next item appends past the last used item.
+        let mut appended_pos = None;
+        let appended_index = queue
+            .add_item_with_id(&test_item(11), &discriminator, &metas, &args, |pos| {
+                appended_pos = Some(pos as usize);
+                [11; 32]
+            })
+            .unwrap();
+        assert_eq!(appended_index, 3);
+        assert_eq!(
+            appended_pos,
+            Some(QueueAccount::align_up(cursor_after_fill as usize))
+        );
+    }
+
+    #[test]
+    fn bytemuck_casts_match_previous_unsafe_forms() {
+        let item = QueueItem {
+            slot: 42,
+            callback_discriminator_offset: 1,
+            metas_offset: 2,
+            args_offset: 3,
+            callback_discriminator_len: 4,
+            metas_len: 5,
+            args_len: 6,
+            priority_request: 1,
+            used: 1,
+            ..test_item(9)
+        };
+        let metas = [
+            CompactAccountMeta {
+                pubkey: [2; 32],
+                is_writable: 1,
+            },
+            CompactAccountMeta {
+                pubkey: [3; 32],
+                is_writable: 0,
+            },
+        ];
+
+        // Writing an item: bytes_of vs raw parts over the struct
+        let safe_item_bytes = bytemuck::bytes_of(&item);
+        let unsafe_item_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &item as *const QueueItem as *const u8,
+                size_of::<QueueItem>(),
+            )
+        };
+        assert_eq!(safe_item_bytes, unsafe_item_bytes);
+
+        // Reading an item back: pod_read_unaligned vs ptr::read_unaligned (offset by 1 to
+        // exercise the unaligned path)
+        let mut buf = vec![0u8; 1 + size_of::<QueueItem>()];
+        buf[1..].copy_from_slice(safe_item_bytes);
+        let safe_read: QueueItem = bytemuck::pod_read_unaligned(&buf[1..]);
+        let unsafe_read =
+            unsafe { core::ptr::read_unaligned(buf[1..].as_ptr() as *const QueueItem) };
+        assert_eq!(safe_read, unsafe_read);
+        assert_eq!(safe_read, item);
+
+        // Metas as bytes: cast_slice vs raw parts over the slice
+        let safe_metas_bytes: &[u8] = bytemuck::cast_slice(&metas);
+        let unsafe_metas_bytes = unsafe {
+            core::slice::from_raw_parts(metas.as_ptr() as *const u8, size_of_val(&metas))
+        };
+        assert_eq!(safe_metas_bytes, unsafe_metas_bytes);
+
+        // Bytes as metas: cast_slice vs raw parts back to the typed slice
+        let safe_typed: &[CompactAccountMeta] = bytemuck::cast_slice(safe_metas_bytes);
+        let unsafe_typed = unsafe {
+            core::slice::from_raw_parts(
+                safe_metas_bytes.as_ptr() as *const CompactAccountMeta,
+                metas.len(),
+            )
+        };
+        assert!(safe_typed == unsafe_typed);
+        assert!(safe_typed == metas);
     }
 
     #[test]
@@ -671,7 +707,9 @@ mod tests {
             pubkey: [2; 32],
             is_writable: 1,
         }; MAX_CALLBACK_ACCOUNTS];
-        let mut data = vec![0u8; 2048];
+        // 8 leading bytes for the account discriminator, which load() validates and skips.
+        let mut data = vec![0u8; 8 + 2048];
+        data[..8].copy_from_slice(&AccountDiscriminator::Queue.to_bytes());
         let mut queue = QueueAccount::load(&mut data).unwrap();
 
         queue
@@ -686,5 +724,121 @@ mod tests {
         assert!(queue
             .add_item(&test_item(1), &discriminator, &too_many_metas, &args)
             .is_err());
+    }
+
+    #[test]
+    fn remove_items_matching_purges_full_mainnet_size_queue() {
+        // Worst case on mainnet: 30,000-byte account (minus discriminator)
+        // filled with minimal 96-byte items = 312 requests.
+        let mut data = vec![0u8; 30_000];
+        data[..8].copy_from_slice(&AccountDiscriminator::Queue.to_bytes());
+        let mut queue = QueueAccount::load(&mut data).unwrap();
+
+        let mut added = 0usize;
+        while queue.add_item(&test_item(1), &[], &[], &[]).is_ok() {
+            added += 1;
+        }
+        assert_eq!(added, 312);
+        assert_eq!(queue.len(), 312);
+
+        let mut removed = 0usize;
+        queue.remove_items_matching(|_| true, |_| removed += 1);
+
+        assert_eq!(removed, 312);
+        assert_eq!(queue.len(), 0);
+        assert!(queue.is_empty());
+        assert_eq!(queue.header.cursor, QueueAccount::items_start() as u32);
+    }
+
+    #[test]
+    fn remove_items_matching_keeps_survivors_and_trims_trailing_holes() {
+        let discriminator = [1u8; 8];
+        let metas = [CompactAccountMeta {
+            pubkey: [2; 32],
+            is_writable: 1,
+        }];
+        let args = [3u8; 48];
+        let span = QueueAccount::align_up(
+            size_of::<QueueItem>() + discriminator.len() + size_of_val(&metas) + args.len(),
+        );
+        let mut data = vec![0u8; 8 + QueueAccount::items_start() + span * 6];
+        data[..8].copy_from_slice(&AccountDiscriminator::Queue.to_bytes());
+        let mut queue = QueueAccount::load(&mut data).unwrap();
+
+        for i in 0..6u8 {
+            queue
+                .add_item(&test_item(i), &discriminator, &metas, &args)
+                .unwrap();
+        }
+        let cursor_after_fill = queue.header.cursor;
+
+        // Remove one middle item (id 1) and the trailing items (ids 4, 5).
+        let mut removed_ids = Vec::new();
+        queue.remove_items_matching(
+            |item| item.id[0] == 1 || item.id[0] >= 4,
+            |item| removed_ids.push(item.id[0]),
+        );
+
+        assert_eq!(removed_ids, vec![1, 4, 5]);
+        assert_eq!(queue.len(), 3);
+        // Cursor trimmed to the end of the last surviving item (id 3).
+        assert_eq!(
+            queue.header.cursor as usize,
+            QueueAccount::items_start() + span * 4
+        );
+
+        // Survivors are intact at their logical indices.
+        for (logical, id) in [0u8, 2, 3].iter().enumerate() {
+            let item = queue.get_item_by_index(logical).unwrap();
+            assert_eq!(item.id, [*id; 32]);
+            assert_eq!(item.callback_discriminator(queue.acc), discriminator);
+            assert!(item.account_metas(queue.acc) == metas);
+            assert_eq!(item.callback_args(queue.acc), args);
+        }
+
+        // The middle hole is reusable.
+        let reused_index = queue
+            .add_item(&test_item(9), &discriminator, &metas, &args)
+            .unwrap();
+        assert_eq!(reused_index, 1);
+        assert_eq!(queue.len(), 4);
+        assert_eq!(
+            queue.header.cursor as usize,
+            QueueAccount::items_start() + span * 4
+        );
+
+        // Appending past the survivors extends from the trimmed cursor.
+        let tail_index = queue
+            .add_item(&test_item(10), &discriminator, &metas, &args)
+            .unwrap();
+        assert_eq!(tail_index, 4);
+        assert!(queue.header.cursor <= cursor_after_fill);
+    }
+
+    #[test]
+    fn remove_items_matching_noop_preserves_queue() {
+        let discriminator = [1u8; 8];
+        let metas = [CompactAccountMeta {
+            pubkey: [2; 32],
+            is_writable: 1,
+        }];
+        let args = [3u8; 48];
+        let mut data = vec![0u8; 8 + 2048];
+        data[..8].copy_from_slice(&AccountDiscriminator::Queue.to_bytes());
+        let mut queue = QueueAccount::load(&mut data).unwrap();
+
+        for i in 0..3u8 {
+            queue
+                .add_item(&test_item(i), &discriminator, &metas, &args)
+                .unwrap();
+        }
+        let cursor_before = queue.header.cursor;
+
+        let mut removed = 0usize;
+        queue.remove_items_matching(|_| false, |_| removed += 1);
+
+        assert_eq!(removed, 0);
+        assert_eq!(queue.len(), 3);
+        assert_eq!(queue.header.cursor, cursor_before);
     }
 }

@@ -1,7 +1,7 @@
-use ephemeral_vrf::vrf::{compute_vrf, generate_vrf_keypair, verify_vrf};
 use solana_sdk::hash::hash;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
+use solana_vrf::vrf::{compute_vrf, generate_vrf_keypair, verify_vrf};
 
 fn main() {
     let keypair = Keypair::new();

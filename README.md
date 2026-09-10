@@ -132,7 +132,7 @@ Common errors include:
 - InvalidProof – The provided VRF proof is invalid.
 - InvalidCallbackAccounts - Invalid executable account in the callback
 
-See [`EphemeralVrfError`](api/src/error.rs) for the full error list.
+See [`SolanaVrfError`](api/src/error.rs) for the full error list.
 
 ## State
 

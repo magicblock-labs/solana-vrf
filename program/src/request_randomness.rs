@@ -1,9 +1,9 @@
-use ephemeral_vrf_api::prelude::*;
 use solana_program::hash::hashv;
 use solana_program::msg;
 use solana_program::program::invoke;
 use solana_program::sysvar::slot_hashes;
 use solana_system_interface::instruction as system_instruction;
+use solana_vrf_api::prelude::*;
 
 /// Process a request for randomness
 ///
@@ -11,21 +11,23 @@ use solana_system_interface::instruction as system_instruction;
 ///
 /// 0. `[signer]` signer - The account requesting randomness and paying for the transaction
 /// 1. `[signer]` program_identity_info - The identity PDA of the calling program
-/// 2. `[]` oracle_queue_info - The oracle queue account that will store the randomness request
+/// 2. `[writable]` oracle_queue_info - The oracle queue account that will store the randomness request
 /// 3. `[]` system_program_info - The system program
 /// 4. `[]` slothashes_account_info - The SlotHashes sysvar account
 ///
 /// Requirements:
 ///
 /// - The signer must be a valid signer
-/// - The program identity must be a valid signer and derived from the vrf-macro program ID
+/// - The program identity must be a valid signer and derived from the callback program ID
 /// - The oracle queue must be properly initialized
 /// - The request is stored in the oracle queue with a combined hash derived from:
 ///   - caller_seed
 ///   - current slot
 ///   - slot hash
-///   - vrf-macro discriminator
-///   - vrf-macro program ID
+///   - callback discriminator
+///   - callback program ID
+///   - Unix timestamp
+///   - queue insertion position (byte offset after the 8-byte account discriminator)
 ///
 /// 1. Verify the signer
 /// 2. Verify the program identity
@@ -68,7 +70,7 @@ pub fn process_request_randomness(
 
     oracle_queue_info
         .is_writable()?
-        .has_owner(&ephemeral_vrf_api::ID)?;
+        .has_owner(&solana_vrf_api::ID)?;
 
     // Load slot and slothash
     slothashes_account_info.is_sysvar(&slot_hashes::id())?;
@@ -82,13 +84,16 @@ pub fn process_request_randomness(
         // Borrow queue account data and load QueueAccount view
         let mut data = oracle_queue_info.try_borrow_mut_data()?;
         Queue::try_from_bytes(&data)?;
-        // Skip 8-byte discriminator
-        let queue_data = &mut data[8..];
-        let mut queue_acc = QueueAccount::load(queue_data)?;
+        let mut queue_acc = QueueAccount::load(&mut data)?;
+
+        // Reject new requests on a paused queue so the oracle can drain and close it.
+        if queue_acc.header.paused != 0 {
+            return Err(ProgramError::from(SolanaVrfError::QueuePaused));
+        }
 
         // Optionally validate discriminator length to 8 bytes max (borsh Vec allows larger, but callbacks typically use 8)
         if args.callback_discriminator.len() > 8 {
-            return Err(ProgramError::from(EphemeralVrfError::ArgumentSizeTooLarge));
+            return Err(ProgramError::from(SolanaVrfError::ArgumentSizeTooLarge));
         }
 
         let metas = args
@@ -97,29 +102,13 @@ pub fn process_request_randomness(
             .map(|ca| (*ca).into())
             .collect::<Vec<CompactAccountMeta>>();
 
-        // Compute a combined hash that includes the actual queue insertion position.
-        let idx = queue_acc.insertion_position(
-            &args.callback_discriminator,
-            &metas,
-            &args.callback_args,
-        )?;
-        let combined_hash = hashv(&[
-            &args.caller_seed,
-            &slot.to_le_bytes(),
-            &slothash,
-            &args.callback_discriminator,
-            &args.callback_program_id.to_bytes(),
-            &time.to_le_bytes(),
-            &idx.to_le_bytes(),
-        ]);
-
-        // Log to simplify gathering all the information needed to recreate the combined_hash.
-        msg!("Idx: {}", idx);
-
-        // Build the base item; variable-length parts are appended by add_item()
+        // Build the base item; its id is a combined hash that includes the actual
+        // queue insertion position. That position is only known once the item is
+        // placed, so the id is derived inside add_item_with_id during the single
+        // insertion scan, rather than pre-computed here with a separate scan.
         let base_item = QueueItem {
             slot,
-            id: combined_hash.to_bytes(),
+            id: [0u8; 32],
             callback_program_id: args.callback_program_id.to_bytes(),
             callback_discriminator_offset: 0,
             metas_offset: 0,
@@ -128,18 +117,33 @@ pub fn process_request_randomness(
             metas_len: 0,
             args_len: 0,
             priority_request: high_priority as u8,
-            used: 0,
+            used: 1,
             identity_mode: scoped as u8,
             identity_bump,
             _padding: [0u8; 2],
         };
 
-        // Append the item to the queue (writes discriminator, metas, args into the variable region)
-        let _logical_index = queue_acc.add_item(
+        // Append the item to the queue (writes discriminator, metas, args into the
+        // variable region) and bind its id to the chosen insertion position.
+        queue_acc.add_item_with_id(
             &base_item,
             &args.callback_discriminator,
             &metas,
             &args.callback_args,
+            |idx| {
+                // Log the position so the combined hash can be recreated off-chain.
+                msg!("Idx: {}", idx);
+                hashv(&[
+                    &args.caller_seed,
+                    &slot.to_le_bytes(),
+                    &slothash,
+                    &args.callback_discriminator,
+                    &args.callback_program_id.to_bytes(),
+                    &time.to_le_bytes(),
+                    &idx.to_le_bytes(),
+                ])
+                .to_bytes()
+            },
         )?;
     }
 

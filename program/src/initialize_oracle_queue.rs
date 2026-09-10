@@ -1,7 +1,6 @@
-use ephemeral_vrf_api::loaders::is_empty_or_zeroed;
-use ephemeral_vrf_api::prelude::EphemeralVrfError::Unauthorized;
-use ephemeral_vrf_api::prelude::*;
 use solana_program::msg;
+use solana_vrf_api::loaders::is_empty_or_zeroed;
+use solana_vrf_api::prelude::*;
 const MAX_EXTRA_BYTES: usize = 10_240;
 
 /// Process the initialization of the Oracle queue
@@ -11,28 +10,27 @@ const MAX_EXTRA_BYTES: usize = 10_240;
 /// This is due to the max allocation size of 10_240 bytes per instruction and the queue possibly
 /// being larger than 10_240 bytes.
 ///
-/// The queue uses zero-copy serialization and can be as big as the max account size on Solana
+/// The queue uses zero-copy serialization and can be as big as
+/// `MAX_QUEUE_ACCOUNT_SIZE` (512 KiB).
 ///
 ///
 /// Accounts:
 ///
 /// 0; `[signer]` The payer of the transaction fees
-/// 1; `[]`       The Oracle public key
+/// 1; `[signer]` The Oracle public key
 /// 2; `[]`       The Oracle data account
-/// 3; `[]`       The Oracle queue account (PDA to be created)
+/// 3; `[writable]` The Oracle queue account (PDA to be created)
 /// 4; `[]`       The System program
 ///
 /// Requirements:
 ///
-/// - The payer (account 0) mus be a signer.
+/// - The payer (account 0) must be a signer.
 /// - The Oracle data account (account 2) must have the correct seeds ([ORACLE_DATA, oracle.key]).
 /// - The Oracle queue account (account 3) must be empty and use the correct seeds ([QUEUE, oracle.key, index]).
-/// - The Oracle must have been registered for at least 200 slots.
 ///
 /// 1. Parse the instruction data and extract arguments (InitializeOracleQueue).
-/// 2. Confirm the Oracle is authorized (enough time has passed since registration).
-/// 3. Create the Oracle queue PDA.
-/// 4. Write the default QueueAccount data to the new PDA.
+/// 2. Create the Oracle queue PDA.
+/// 3. Write the default QueueAccount data to the new PDA.
 pub fn process_initialize_oracle_queue(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     // Parse args
     let args = InitializeOracleQueue::try_from_bytes(data)?;
@@ -51,48 +49,35 @@ pub fn process_initialize_oracle_queue(accounts: &[AccountInfo<'_>], data: &[u8]
     let oracle_key_ref = oracle_key_bytes.as_ref();
 
     // Validate seeds
-    oracle_data_info.has_seeds(&[ORACLE_DATA, oracle_key_ref], &ephemeral_vrf_api::ID)?;
-    oracle_queue_info.is_writable()?.has_seeds(
-        &[QUEUE, oracle_key_ref, &[args.index]],
-        &ephemeral_vrf_api::ID,
-    )?;
+    oracle_data_info.has_seeds(&[ORACLE_DATA, oracle_key_ref], &solana_vrf_api::ID)?;
+    oracle_queue_info
+        .is_writable()?
+        .has_seeds(&[QUEUE, oracle_key_ref, &[args.index]], &solana_vrf_api::ID)?;
     is_empty_or_zeroed(oracle_queue_info)?;
-
-    let oracle_registration_slot = {
-        let oracle_data = oracle_data_info.as_account::<Oracle>(&ephemeral_vrf_api::ID)?;
-        oracle_data.registration_slot
-    };
-
-    // Check slot timing
-    let current_slot = Clock::get()?.slot;
-
-    let slots_since_registration = current_slot.saturating_sub(oracle_registration_slot);
-
-    if slots_since_registration < 200 {
-        log(format!(
-            "Oracle {} not yet authorized – wait {} more slots",
-            oracle_info.key,
-            200 - slots_since_registration
-        ));
-        return Err(Unauthorized.into());
-    }
 
     // PDA creation or reallocation
     let seeds: &[&[u8]] = &[QUEUE, oracle_key_ref, &[args.index]];
-    let bump = Pubkey::find_program_address(seeds, &ephemeral_vrf_api::ID).1;
+    let bump = Pubkey::find_program_address(seeds, &solana_vrf_api::ID).1;
 
     let target_size = args.target_size as usize;
+    // Hard cap: keep every O(n) queue operation (above all the single-pass
+    // purge) well within the per-transaction compute budget.
+    if args.target_size > MAX_QUEUE_ACCOUNT_SIZE {
+        return Err(SolanaVrfError::QueueSizeTooLarge.into());
+    }
     let current_size = oracle_queue_info.data_len();
 
     let extra_bytes = target_size.saturating_sub(current_size);
 
     if extra_bytes > MAX_EXTRA_BYTES {
+        // The account is not yet owned by the program here, so it is still empty
+        // (current_size == 0) and realloc_size == MAX_EXTRA_BYTES. Use realloc_size
+        // in both branches so the size increment is defined consistently.
         let realloc_size = current_size + MAX_EXTRA_BYTES;
-        if oracle_queue_info.owner != &ephemeral_vrf_api::ID {
+        if oracle_queue_info.owner != &solana_vrf_api::ID {
             create_pda(
                 oracle_queue_info,
-                &ephemeral_vrf_api::ID,
-                MAX_EXTRA_BYTES,
+                realloc_size,
                 seeds,
                 bump,
                 system_program,
@@ -110,10 +95,9 @@ pub fn process_initialize_oracle_queue(accounts: &[AccountInfo<'_>], data: &[u8]
     }
 
     // Finalize PDA size if needed
-    if oracle_queue_info.owner != &ephemeral_vrf_api::ID {
+    if oracle_queue_info.owner != &solana_vrf_api::ID {
         create_pda(
             oracle_queue_info,
-            &ephemeral_vrf_api::ID,
             target_size,
             seeds,
             bump,
@@ -129,14 +113,13 @@ pub fn process_initialize_oracle_queue(accounts: &[AccountInfo<'_>], data: &[u8]
         let mut data = oracle_queue_info.data.borrow_mut();
         let disc = AccountDiscriminator::Queue.to_bytes();
         data[..8].copy_from_slice(&disc);
-        let acc_without_disc = &mut data[8..];
-        let qacc = QueueAccount::load(acc_without_disc)?;
+        let qacc = QueueAccount::load(&mut data)?;
         qacc.header.index = args.index;
     }
 
     // Increment oracle's open queue count
-    let mut oracle_data_mut = oracle_data_info.as_account_mut::<Oracle>(&ephemeral_vrf_api::ID)?;
-    oracle_data_mut.open_queue = oracle_data_mut.open_queue.saturating_add(1);
+    let mut oracle_data_mut = oracle_data_info.as_account_mut::<Oracle>(&solana_vrf_api::ID)?;
+    oracle_data_mut.open_queues = oracle_data_mut.open_queues.saturating_add(1);
 
     Ok(())
 }

@@ -1,11 +1,9 @@
-use ephemeral_vrf_api::loaders::load_program_upgrade_authority;
-use ephemeral_vrf_api::prelude::EphemeralVrfError::{
-    InvalidOracleIdentity, QueueNotEmpty, Unauthorized,
-};
-use ephemeral_vrf_api::prelude::*;
-use ephemeral_vrf_api::verify::is_on_curve;
 use solana_curve25519::ristretto::validate_ristretto;
 use solana_program::msg;
+use solana_vrf_api::loaders::load_program_upgrade_authority;
+use solana_vrf_api::prelude::SolanaVrfError::{InvalidOracleIdentity, QueueNotEmpty, Unauthorized};
+use solana_vrf_api::prelude::*;
+use solana_vrf_api::verify::is_on_curve;
 
 /// Process the modification of oracles (add or remove)
 ///
@@ -14,8 +12,8 @@ use solana_program::msg;
 /// 0. `[signer]` signer - Must be the admin
 /// 1. `[writable]` oracles_info - PDA that stores the list of oracle identities
 /// 2. `[writable]` oracle_data_info - PDA that stores the oracle data
-/// 2. `[]` program data account - Used to read the program's upgrade authority
-/// 3. `[]` system_program - System program for account creation/closing
+/// 3. `[]` program data account - Used to read the program's upgrade authority
+/// 4. `[]` system_program - System program for account creation/closing
 ///
 /// Requirements:
 ///
@@ -58,29 +56,31 @@ pub fn process_modify_oracles(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
 
     // Check that the signer is the admin.
     // The admin is the program upgrade authority, which should be a multi-sig.
-    let admin_pubkey = load_program_upgrade_authority(&ephemeral_vrf_api::ID, program_data_info)?
+    let admin_pubkey = load_program_upgrade_authority(&solana_vrf_api::ID, program_data_info)?
         .ok_or(Unauthorized)?;
 
     if !signer_info.key.eq(&admin_pubkey) {
-        log(format!(
+        msg!(
             "Signer not authorized, expected: {}, got: {}",
-            admin_pubkey, signer_info.key
-        ));
+            admin_pubkey,
+            signer_info.key
+        );
         return Err(Unauthorized.into());
     }
 
     oracles_info
         .is_writable()?
-        .has_seeds(&[ORACLES], &ephemeral_vrf_api::ID)?;
+        .has_seeds(&[ORACLES], &solana_vrf_api::ID)?;
 
     oracle_data_info.is_writable()?.has_seeds(
         &[ORACLE_DATA, args.identity.to_bytes().as_ref()],
-        &ephemeral_vrf_api::ID,
+        &solana_vrf_api::ID,
     )?;
 
-    let oracles_data = oracles_info.try_borrow_data()?;
-    let mut oracles = Oracles::try_from_bytes_with_discriminator(&oracles_data)?;
-    drop(oracles_data);
+    let mut oracles = {
+        let oracles_data = oracles_info.try_borrow_data()?;
+        Oracles::try_from_bytes_with_discriminator(&oracles_data)?
+    };
 
     if args.operation == 0 {
         oracles.oracles.push(args.identity);
@@ -88,20 +88,20 @@ pub fn process_modify_oracles(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
             oracle_data_info,
             system_program,
             signer_info,
-            &ephemeral_vrf_api::ID,
+            &solana_vrf_api::ID,
             &[ORACLE_DATA, args.identity.to_bytes().as_ref()],
         )?;
-        let mut oracle_data = oracle_data_info.as_account_mut::<Oracle>(&ephemeral_vrf_api::ID)?;
+        let mut oracle_data = oracle_data_info.as_account_mut::<Oracle>(&solana_vrf_api::ID)?;
         oracle_data.vrf_pubkey = args.oracle_pubkey;
         oracle_data.registration_slot = Clock::get()?.slot;
     } else if args.operation == 1 {
         // Ensure oracle has no open queues before removal
-        let open_queue = {
-            let oracle_data = oracle_data_info.as_account::<Oracle>(&ephemeral_vrf_api::ID)?;
-            oracle_data.open_queue
+        let open_queues = {
+            let oracle_data = oracle_data_info.as_account::<Oracle>(&solana_vrf_api::ID)?;
+            oracle_data.open_queues
         };
-        if open_queue != 0 {
-            msg!("Oracle has {} open queues", open_queue);
+        if open_queues != 0 {
+            msg!("Oracle has {} open queues", open_queues);
             return Err(QueueNotEmpty.into());
         }
         oracles.oracles.retain(|oracle| oracle.ne(&args.identity));

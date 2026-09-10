@@ -1,5 +1,5 @@
 [package]
-name = "ephemeral-vrf-program"
+name = "solana-vrf-program"
 description = ""
 version.workspace = true
 edition.workspace = true
@@ -16,11 +16,11 @@ crate-type = ["cdylib", "lib"]
 [features]
 default = []
 no-entrypoint = []
-test-sbf = ["ephemeral-vrf-api/unit_test_config"]
-ephemeral-test-queue = ["ephemeral-vrf-api/ephemeral-test-queue"]
+test-sbf = ["solana-vrf-api/unit_test_config"]
+ephemeral-test-queue = ["solana-vrf-api/ephemeral-test-queue"]
 
 [dependencies]
-ephemeral-vrf-api = { workspace = true, features = [] }
+solana-vrf-api = { workspace = true, features = [] }
 ephemeral-rollups-sdk.workspace = true
 solana-curve25519.workspace = true
 curve25519-dalek.workspace = true
@@ -28,7 +28,7 @@ solana-program.workspace = true
 solana-system-interface.workspace = true
 
 [dev-dependencies]
-ephemeral-vrf = { workspace = true}
+solana-vrf = { workspace = true}
 solana-program-test = { workspace = true }
 solana-sdk = { workspace = true }
 solana-compute-budget-interface = { workspace = true }

@@ -177,11 +177,6 @@ pub fn close_account<'info>(
 }
 
 #[inline(always)]
-pub fn log(msg: String) {
-    solana_program::msg!("{}", msg);
-}
-
-#[inline(always)]
 pub fn create_program_account<'a, 'info, T: Discriminator + Pod>(
     target_account: &'a AccountInfo<'info>,
     system_program: &'a AccountInfo<'info>,

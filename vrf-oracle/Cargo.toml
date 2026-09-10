@@ -3,13 +3,13 @@
 name = "vrf-oracle"
 version = { workspace = true }
 edition = { workspace = true }
-description = "Ephemeral VRF Oracle"
+description = "SolanaVrf Oracle"
 authors = { workspace = true }
 
 [dependencies]
 clap.workspace = true
-ephemeral-vrf-api = { workspace = true}
-ephemeral-vrf = { workspace = true}
+solana-vrf-api = { workspace = true}
+solana-vrf = { workspace = true}
 curve25519-dalek.workspace = true
 solana-curve25519.workspace = true
 solana-sdk.workspace = true

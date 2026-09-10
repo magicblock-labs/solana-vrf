@@ -1,9 +1,9 @@
-use ephemeral_vrf_api::consts::DEFAULT_EPHEMERAL_QUEUE;
-#[cfg(feature = "ephemeral-test-queue")]
-use ephemeral_vrf_api::consts::DEFAULT_EPHEMERAL_TEST_QUEUE;
 use solana_program::account_info::AccountInfo;
 use solana_program::program_error::ProgramError;
 use solana_program::pubkey::Pubkey;
+use solana_vrf_api::consts::DEFAULT_EPHEMERAL_QUEUE;
+#[cfg(feature = "ephemeral-test-queue")]
+use solana_vrf_api::consts::DEFAULT_EPHEMERAL_TEST_QUEUE;
 
 /// Whether `queue` is exempt from the per-request fee (and the matching oracle payout).
 /// `DEFAULT_EPHEMERAL_QUEUE` is always exempt; the local test queue only with the

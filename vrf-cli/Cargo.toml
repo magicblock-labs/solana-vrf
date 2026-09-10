@@ -2,14 +2,14 @@
 name = "vrf-cli"
 version = {workspace = true}
 edition = {workspace = true}
-description = "CLI tool for interacting with Ephemeral VRF Solana program"
+description = "CLI tool for interacting with SolanaVrf program"
 authors = {workspace = true}
 
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-ephemeral-vrf-api.workspace = true
-ephemeral-vrf.workspace = true
+solana-vrf-api.workspace = true
+solana-vrf.workspace = true
 solana-client.workspace = true
 solana-commitment-config.workspace = true
 solana-compute-budget-interface.workspace = true

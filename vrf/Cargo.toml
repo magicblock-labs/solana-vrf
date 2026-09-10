@@ -1,6 +1,6 @@
 [package]
-name = "ephemeral-vrf"
-description = "Core Ephemeral Vrf functionality"
+name = "solana-vrf"
+description = "Core SolanaVrf functionality"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
