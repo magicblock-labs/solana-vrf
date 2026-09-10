@@ -15,8 +15,6 @@ pub enum EphemeralVrfError {
     InvalidQueueIndex = 5,
     #[error("Argument size exceeds the maximum allowed")]
     ArgumentSizeTooLarge = 8,
-    #[error("Oracle is not authorized")]
-    OracleNotAuthorized = 10,
     #[error("Queue is not empty - cannot close queue with pending requests")]
     QueueNotEmpty = 11,
     #[error("Invalid oracle identity")]

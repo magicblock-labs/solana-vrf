@@ -583,11 +583,6 @@
       "msg": "Argument size exceeds the maximum allowed"
     },
     {
-      "code": 10,
-      "name": "OracleNotAuthorized",
-      "msg": "Oracle is not authorized"
-    },
-    {
       "code": 11,
       "name": "QueueNotEmpty",
       "msg": "Queue is not empty - cannot close queue with pending requests"
