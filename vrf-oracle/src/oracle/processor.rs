@@ -37,6 +37,8 @@ use std::time::Duration;
 use tokio::task;
 
 const ANCHOR_CONSTRAINT_ADDRESS_ERROR: u32 = 2012;
+/// Cap on the exponential wait between purge attempts for one request.
+const PURGE_RETRY_MAX_SLOTS: u64 = 256;
 const BLOCKHASH_MAX_AGE: Duration = Duration::from_secs(3);
 const MAX_PRIORITY_FEE_LAMPORTS: u64 = 60_000;
 
@@ -275,6 +277,7 @@ pub async fn process_oracle_queue(
                 }
                 let mut attempts = 0;
                 let mut backoff_attempts = 0;
+                let mut purges_sent: u32 = 0;
                 let mut first_legal_attempt_pending = false;
                 blockhash_cache.refresh_if_stale(BLOCKHASH_MAX_AGE).await;
                 let prepared_vrf =
@@ -313,13 +316,11 @@ pub async fn process_oracle_queue(
                     let attempt_slot = oracle_client_for_proc.slot_tracker.current();
                     let sent_early = attempt_slot < first_valid_slot;
                     let mut use_backoff = false;
+                    // Past the TTL the prepared fulfilment is replaced by a purge.
+                    let expired = attempt_slot.saturating_sub(item.slot)
+                        > oracle_client_for_proc.slot_tracker.ttl_slots();
                     let transaction = match prepared_transaction.take() {
-                        Some(transaction)
-                            if attempt_slot.saturating_sub(item.slot)
-                                <= oracle_client_for_proc.slot_tracker.ttl_slots() =>
-                        {
-                            transaction
-                        }
+                        Some(transaction) if !expired => transaction,
                         _ => {
                             ProcessableItem(item)
                                 .prepare_transaction(
@@ -350,11 +351,17 @@ pub async fn process_oracle_queue(
                     .await;
                     let early_send_accepted = sent_early && result.is_ok();
                     match result {
-                        Ok(signature) => trace!(
-                            "Transaction: {}, for id {}",
-                            signature,
-                            Pubkey::new_from_array(item.id)
-                        ),
+                        Ok(signature) => {
+                            if expired {
+                                // Accepted purge that may leave the item in place: back off.
+                                purges_sent += 1;
+                            }
+                            trace!(
+                                "Transaction: {}, for id {}",
+                                signature,
+                                Pubkey::new_from_array(item.id)
+                            )
+                        }
                         Err(error) => {
                             use_backoff = true;
                             if let Some(TransactionError::InstructionError(
@@ -409,12 +416,18 @@ pub async fn process_oracle_queue(
                                 .await,
                         );
                     }
-                    let retry_slots = if use_backoff {
+                    let purge_delay = if purges_sent > 0 {
+                        (1u64 << purges_sent.min(8)).min(PURGE_RETRY_MAX_SLOTS)
+                    } else {
+                        0
+                    };
+                    let error_delay = if use_backoff {
                         (1u64 << backoff_attempts.min(5)).min(32)
                     } else {
                         backoff_attempts = 0;
                         1
                     };
+                    let retry_slots = purge_delay.max(error_delay);
                     blockhash_cache.refresh_if_stale(BLOCKHASH_MAX_AGE).await;
                     oracle_client_for_proc
                         .slot_tracker
@@ -424,6 +437,8 @@ pub async fn process_oracle_queue(
                         tokio::time::sleep(oracle_client_for_proc.slot_tracker.early_send_grace())
                             .await;
                     }
+                    // A long purge backoff can outlive the cached blockhash.
+                    blockhash_cache.refresh_if_stale(BLOCKHASH_MAX_AGE).await;
                     attempts = next_attempt;
                     if use_backoff {
                         backoff_attempts += 1;
