@@ -26,19 +26,27 @@ use solana_vrf::vrf::{compute_vrf, verify_vrf};
 use solana_vrf_api::{
     prelude::{
         provide_randomness_with_identity_mode, purge_expired_requests, Queue, QueueAccount,
-        QueueItem, SolanaVrfError,
+        QueueItem, SolanaVrfError, QUEUE_TTL_SECONDS,
     },
     state::oracle_queue_pda,
     ID as PROGRAM_ID,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::task;
 
 const ANCHOR_CONSTRAINT_ADDRESS_ERROR: u32 = 2012;
 /// Cap on the exponential wait between purge attempts for one request.
 const PURGE_RETRY_MAX_SLOTS: u64 = 256;
+
+/// Wall-clock age of a request, the same rule the program purges by.
+fn age_secs(item: &QueueItem) -> u64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+    item.age_secs(QueueItem::created_at_from(now))
+}
 const BLOCKHASH_MAX_AGE: Duration = Duration::from_secs(3);
 const MAX_PRIORITY_FEE_LAMPORTS: u64 = 60_000;
 
@@ -317,8 +325,7 @@ pub async fn process_oracle_queue(
                     let sent_early = attempt_slot < first_valid_slot;
                     let mut use_backoff = false;
                     // Past the TTL the prepared fulfilment is replaced by a purge.
-                    let expired = attempt_slot.saturating_sub(item.slot)
-                        > oracle_client_for_proc.slot_tracker.ttl_slots();
+                    let expired = age_secs(&item) > QUEUE_TTL_SECONDS;
                     let transaction = match prepared_transaction.take() {
                         Some(transaction) if !expired => transaction,
                         _ => {
@@ -378,16 +385,9 @@ pub async fn process_oracle_queue(
                                     use_backoff = false;
                                 }
                                 if code == ANCHOR_CONSTRAINT_ADDRESS_ERROR {
-                                    let purge_slot = item
-                                        .slot
-                                        .saturating_add(
-                                            oracle_client_for_proc.slot_tracker.ttl_slots(),
-                                        )
-                                        .saturating_add(1);
-                                    oracle_client_for_proc
-                                        .slot_tracker
-                                        .wait_for_slot(purge_slot)
-                                        .await;
+                                    let until_expiry =
+                                        QUEUE_TTL_SECONDS.saturating_sub(age_secs(&item)) + 1;
+                                    tokio::time::sleep(Duration::from_secs(until_expiry)).await;
                                     blockhash_cache.refresh_if_stale(BLOCKHASH_MAX_AGE).await;
                                     continue;
                                 }
@@ -520,11 +520,7 @@ impl ProcessableItem {
         attempt: u64,
     ) -> Transaction {
         let (blockhash, _) = blockhash_cache.get_blockhash_and_slot().await;
-        let current_slot = oracle_client.slot_tracker.current();
-
-        // Check whether the request is expired
-        let age = current_slot.saturating_sub(self.0.slot);
-        let is_purge = age > oracle_client.slot_tracker.ttl_slots();
+        let is_purge = age_secs(&self.0) > QUEUE_TTL_SECONDS;
         let ix = if is_purge {
             // Build purge instruction for the queue index
             purge_expired_requests(oracle_client.keypair.pubkey(), queue_meta.index)
