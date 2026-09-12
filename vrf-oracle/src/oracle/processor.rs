@@ -40,12 +40,20 @@ const ANCHOR_CONSTRAINT_ADDRESS_ERROR: u32 = 2012;
 /// Cap on the exponential wait between purge attempts for one request.
 const PURGE_RETRY_MAX_SLOTS: u64 = 256;
 
+/// Host clock may trail the cluster clock that stamped the request; a stamp
+/// this far in the future reads as age 0 instead of wrapping.
+const CLOCK_SKEW_UNITS: u16 = 15;
+
 /// Wall-clock age of a request, the same rule the program purges by.
 fn age_secs(item: &QueueItem) -> u64 {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
-    item.age_secs(QueueItem::created_at_from(now))
+    let now_stamp = QueueItem::created_at_from(now);
+    if item.created_at.wrapping_sub(now_stamp) <= CLOCK_SKEW_UNITS {
+        return 0;
+    }
+    item.age_secs(now_stamp)
 }
 const BLOCKHASH_MAX_AGE: Duration = Duration::from_secs(3);
 const MAX_PRIORITY_FEE_LAMPORTS: u64 = 60_000;
