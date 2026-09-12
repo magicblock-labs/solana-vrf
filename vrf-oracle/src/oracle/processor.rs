@@ -26,17 +26,35 @@ use solana_vrf::vrf::{compute_vrf, verify_vrf};
 use solana_vrf_api::{
     prelude::{
         provide_randomness_with_identity_mode, purge_expired_requests, Queue, QueueAccount,
-        QueueItem, SolanaVrfError,
+        QueueItem, SolanaVrfError, QUEUE_TTL_SECONDS,
     },
     state::oracle_queue_pda,
     ID as PROGRAM_ID,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::task;
 
 const ANCHOR_CONSTRAINT_ADDRESS_ERROR: u32 = 2012;
+/// Cap on the exponential wait between purge attempts for one request.
+const PURGE_RETRY_MAX_SLOTS: u64 = 256;
+
+/// Host clock may trail the cluster clock that stamped the request; a stamp
+/// this far in the future reads as age 0 instead of wrapping.
+const CLOCK_SKEW_UNITS: u16 = 15;
+
+/// Wall-clock age of a request, the same rule the program purges by.
+fn age_secs(item: &QueueItem) -> u64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+    let now_stamp = QueueItem::created_at_from(now);
+    if item.created_at.wrapping_sub(now_stamp) <= CLOCK_SKEW_UNITS {
+        return 0;
+    }
+    item.age_secs(now_stamp)
+}
 const BLOCKHASH_MAX_AGE: Duration = Duration::from_secs(3);
 const MAX_PRIORITY_FEE_LAMPORTS: u64 = 60_000;
 
@@ -275,6 +293,7 @@ pub async fn process_oracle_queue(
                 }
                 let mut attempts = 0;
                 let mut backoff_attempts = 0;
+                let mut purges_sent: u32 = 0;
                 let mut first_legal_attempt_pending = false;
                 blockhash_cache.refresh_if_stale(BLOCKHASH_MAX_AGE).await;
                 let prepared_vrf =
@@ -313,13 +332,10 @@ pub async fn process_oracle_queue(
                     let attempt_slot = oracle_client_for_proc.slot_tracker.current();
                     let sent_early = attempt_slot < first_valid_slot;
                     let mut use_backoff = false;
+                    // Past the TTL the prepared fulfilment is replaced by a purge.
+                    let expired = age_secs(&item) > QUEUE_TTL_SECONDS;
                     let transaction = match prepared_transaction.take() {
-                        Some(transaction)
-                            if attempt_slot.saturating_sub(item.slot)
-                                <= oracle_client_for_proc.slot_tracker.ttl_slots() =>
-                        {
-                            transaction
-                        }
+                        Some(transaction) if !expired => transaction,
                         _ => {
                             ProcessableItem(item)
                                 .prepare_transaction(
@@ -350,11 +366,17 @@ pub async fn process_oracle_queue(
                     .await;
                     let early_send_accepted = sent_early && result.is_ok();
                     match result {
-                        Ok(signature) => trace!(
-                            "Transaction: {}, for id {}",
-                            signature,
-                            Pubkey::new_from_array(item.id)
-                        ),
+                        Ok(signature) => {
+                            if expired {
+                                // Accepted purge that may leave the item in place: back off.
+                                purges_sent += 1;
+                            }
+                            trace!(
+                                "Transaction: {}, for id {}",
+                                signature,
+                                Pubkey::new_from_array(item.id)
+                            )
+                        }
                         Err(error) => {
                             use_backoff = true;
                             if let Some(TransactionError::InstructionError(
@@ -371,16 +393,9 @@ pub async fn process_oracle_queue(
                                     use_backoff = false;
                                 }
                                 if code == ANCHOR_CONSTRAINT_ADDRESS_ERROR {
-                                    let purge_slot = item
-                                        .slot
-                                        .saturating_add(
-                                            oracle_client_for_proc.slot_tracker.ttl_slots(),
-                                        )
-                                        .saturating_add(1);
-                                    oracle_client_for_proc
-                                        .slot_tracker
-                                        .wait_for_slot(purge_slot)
-                                        .await;
+                                    let until_expiry =
+                                        QUEUE_TTL_SECONDS.saturating_sub(age_secs(&item)) + 1;
+                                    tokio::time::sleep(Duration::from_secs(until_expiry)).await;
                                     blockhash_cache.refresh_if_stale(BLOCKHASH_MAX_AGE).await;
                                     continue;
                                 }
@@ -409,12 +424,18 @@ pub async fn process_oracle_queue(
                                 .await,
                         );
                     }
-                    let retry_slots = if use_backoff {
+                    let purge_delay = if purges_sent > 0 {
+                        (1u64 << purges_sent.min(8)).min(PURGE_RETRY_MAX_SLOTS)
+                    } else {
+                        0
+                    };
+                    let error_delay = if use_backoff {
                         (1u64 << backoff_attempts.min(5)).min(32)
                     } else {
                         backoff_attempts = 0;
                         1
                     };
+                    let retry_slots = purge_delay.max(error_delay);
                     blockhash_cache.refresh_if_stale(BLOCKHASH_MAX_AGE).await;
                     oracle_client_for_proc
                         .slot_tracker
@@ -424,6 +445,8 @@ pub async fn process_oracle_queue(
                         tokio::time::sleep(oracle_client_for_proc.slot_tracker.early_send_grace())
                             .await;
                     }
+                    // A long purge backoff can outlive the cached blockhash.
+                    blockhash_cache.refresh_if_stale(BLOCKHASH_MAX_AGE).await;
                     attempts = next_attempt;
                     if use_backoff {
                         backoff_attempts += 1;
@@ -505,11 +528,7 @@ impl ProcessableItem {
         attempt: u64,
     ) -> Transaction {
         let (blockhash, _) = blockhash_cache.get_blockhash_and_slot().await;
-        let current_slot = oracle_client.slot_tracker.current();
-
-        // Check whether the request is expired
-        let age = current_slot.saturating_sub(self.0.slot);
-        let is_purge = age > oracle_client.slot_tracker.ttl_slots();
+        let is_purge = age_secs(&self.0) > QUEUE_TTL_SECONDS;
         let ix = if is_purge {
             // Build purge instruction for the queue index
             purge_expired_requests(oracle_client.keypair.pubkey(), queue_meta.index)

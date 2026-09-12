@@ -7,10 +7,21 @@
 //! never land; after the fix it must succeed and fully drain the queue.
 
 use solana_compute_budget_interface::ComputeBudgetInstruction;
-use solana_program_test::{processor, ProgramTest};
+use solana_program::clock::Clock;
+use solana_program_test::{processor, ProgramTest, ProgramTestContext};
 use solana_sdk::account::Account;
 use solana_sdk::{signature::Keypair, signer::Signer, transaction::Transaction};
 use solana_vrf_api::prelude::*;
+
+/// Clock time for the purge. Expired items are stamped 600 s earlier, live
+/// items with this value.
+const NOW: i64 = 1_789_086_305;
+
+async fn set_now(context: &mut ProgramTestContext) {
+    let mut clock = context.banks_client.get_sysvar::<Clock>().await.unwrap();
+    clock.unix_timestamp = NOW;
+    context.set_sysvar(&clock);
+}
 
 /// Mainnet queue account size (advisory: 29,976 usable bytes after
 /// discriminator + header, i.e. 312 minimal 96-byte requests).
@@ -19,8 +30,8 @@ const QUEUE_ACCOUNT_SIZE: usize = 30_000;
 const MAINNET_CU_LIMIT: u32 = 1_400_000;
 
 /// Build the exact byte content of a full queue account whose items are all
-/// expired (slot 0), using the real `QueueAccount` implementation so the
-/// layout is identical to what on-chain requests produce.
+/// expired (created 600 s before `NOW`), using the real `QueueAccount`
+/// implementation so the layout is identical to what on-chain requests produce.
 fn full_expired_queue(index: u8, account_size: usize) -> (Vec<u8>, usize) {
     let mut data = vec![0u8; account_size];
     data[..8].copy_from_slice(&AccountDiscriminator::Queue.to_bytes());
@@ -28,7 +39,7 @@ fn full_expired_queue(index: u8, account_size: usize) -> (Vec<u8>, usize) {
     queue.header.index = index;
 
     let expired_item = QueueItem {
-        slot: 0,
+        created_at: QueueItem::created_at_from(NOW - 600),
         ..QueueItem::default()
     };
     let mut added = 0usize;
@@ -91,20 +102,7 @@ async fn purge_full_queue_within_mainnet_compute_budget() {
     );
 
     // Advance past the TTL so every staged request is expired.
-    let slot = banks
-        .get_sysvar::<solana_program::clock::Clock>()
-        .await
-        .unwrap()
-        .slot;
-    context.warp_to_slot(slot + 1_000).unwrap();
-    let mut clock = context
-        .banks_client
-        .get_sysvar::<solana_program::clock::Clock>()
-        .await
-        .unwrap();
-    // Expiry is wall-clock based; push the Clock timestamp well past the TTL.
-    clock.unix_timestamp = clock.epoch_start_timestamp + 1_000_000;
-    context.set_sysvar(&clock);
+    set_now(&mut context).await;
 
     // Execute the real purge instruction under the mainnet CU cap.
     let budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(MAINNET_CU_LIMIT);
@@ -185,7 +183,7 @@ async fn purge_mixed_queue_keeps_live_requests() {
         .await
         .unwrap()
         .slot
-        + 1_000_000; // far in the future: never expires during the test
+        + 1_000_000; // distinct from the expired items' slot 0
 
     // 312 items: alternate expired/live for the first 200 (middle holes),
     // then 112 expired at the tail (trailing holes).
@@ -199,6 +197,7 @@ async fn purge_mixed_queue_keeps_live_requests() {
             let is_live = i < 200 && i % 2 == 0;
             let item = QueueItem {
                 slot: if is_live { live_slot } else { 0 },
+                created_at: QueueItem::created_at_from(if is_live { NOW } else { NOW - 600 }),
                 id: [i as u8; 32],
                 ..QueueItem::default()
             };
@@ -225,20 +224,7 @@ async fn purge_mixed_queue_keeps_live_requests() {
     );
 
     // Advance past the TTL and purge.
-    let slot = banks
-        .get_sysvar::<solana_program::clock::Clock>()
-        .await
-        .unwrap()
-        .slot;
-    context.warp_to_slot(slot + 1_000).unwrap();
-    let mut clock = context
-        .banks_client
-        .get_sysvar::<solana_program::clock::Clock>()
-        .await
-        .unwrap();
-    // Expiry is wall-clock based; push the Clock timestamp well past the TTL.
-    clock.unix_timestamp = clock.epoch_start_timestamp + 1_000_000;
-    context.set_sysvar(&clock);
+    set_now(&mut context).await;
     let purge_ix = purge_expired_requests(oracle_keypair.pubkey(), 0);
     let blockhash = banks.get_latest_blockhash().await.unwrap();
     let tx = Transaction::new_signed_with_payer(
@@ -322,20 +308,7 @@ async fn purge_max_size_queue_within_mainnet_compute_budget() {
 
     let mut context = program_test.start_with_context().await;
     let banks = context.banks_client.clone();
-    let slot = banks
-        .get_sysvar::<solana_program::clock::Clock>()
-        .await
-        .unwrap()
-        .slot;
-    context.warp_to_slot(slot + 1_000).unwrap();
-    let mut clock = context
-        .banks_client
-        .get_sysvar::<solana_program::clock::Clock>()
-        .await
-        .unwrap();
-    // Expiry is wall-clock based; push the Clock timestamp well past the TTL.
-    clock.unix_timestamp = clock.epoch_start_timestamp + 1_000_000;
-    context.set_sysvar(&clock);
+    set_now(&mut context).await;
 
     let budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(MAINNET_CU_LIMIT);
     let purge_ix = purge_expired_requests(oracle_keypair.pubkey(), 0);

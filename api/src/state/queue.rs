@@ -42,7 +42,24 @@ pub struct QueueItem {
     pub used: u8,          // Flag: 1 = used, 0 = free (logically removed)
     pub identity_mode: u8, // 0 = legacy global identity, 1 = scoped per-callback identity
     pub identity_bump: u8, // bump for the scoped identity PDA (valid when identity_mode == 1)
-    pub _padding: [u8; 2],
+    /// Creation time in `CREATED_AT_UNIT_SECS` units, modulo ~72 h: an item
+    /// that old reads as fresh for one TTL per cycle.
+    pub created_at: u16,
+}
+
+/// Resolution of `QueueItem::created_at`.
+pub const CREATED_AT_UNIT_SECS: i64 = 4;
+
+impl QueueItem {
+    pub fn created_at_from(unix_timestamp: i64) -> u16 {
+        (unix_timestamp / CREATED_AT_UNIT_SECS) as u16
+    }
+
+    /// Wall-clock age given the current stamp (`created_at_from(now)`), taken
+    /// modulo the wrap.
+    pub fn age_secs(&self, now_stamp: u16) -> u64 {
+        now_stamp.wrapping_sub(self.created_at) as u64 * CREATED_AT_UNIT_SECS as u64
+    }
 }
 
 impl QueueItem {
