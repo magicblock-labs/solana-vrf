@@ -120,7 +120,7 @@ pub fn process_request_randomness(
             used: 1,
             identity_mode: scoped as u8,
             identity_bump,
-            _padding: [0u8; 2],
+            created_at: QueueItem::created_at_from(time),
         };
 
         // Append the item to the queue (writes discriminator, metas, args into the
