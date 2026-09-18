@@ -25,6 +25,17 @@ use solana_vrf_api::prelude::*;
 // Program entrypoint, declared up front rather than after the helpers it dispatches to.
 solana_program::entrypoint!(process_instruction);
 
+#[cfg(not(feature = "no-entrypoint"))]
+solana_security_txt::security_txt! {
+    name: "MagicBlock VRF",
+    project_url: "https://magicblock.xyz",
+    contacts: "email:dev@magicblock.gg,twitter:@magicblock",
+    policy: "https://github.com/magicblock-labs/solana-vrf/blob/main/LICENSE.md",
+    preferred_languages: "en",
+    source_code: "https://github.com/magicblock-labs/solana-vrf",
+    auditors: "Zenith, Arda"
+}
+
 fn parse_instruction8<'a, T: std::convert::TryFrom<u8>>(
     program_id: &'a Pubkey,
     data: &'a [u8],
