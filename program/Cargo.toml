@@ -26,6 +26,7 @@ solana-curve25519.workspace = true
 curve25519-dalek.workspace = true
 solana-program.workspace = true
 solana-system-interface.workspace = true
+solana-security-txt.workspace = true
 
 [dev-dependencies]
 solana-vrf = { workspace = true}
