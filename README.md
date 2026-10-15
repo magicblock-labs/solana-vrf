@@ -4,6 +4,8 @@
 
 The same program and SDK also work inside [MagicBlock Ephemeral Rollups](https://docs.magicblock.gg), so a Solana program that uses SolanaVrf keeps working when it is delegated to a rollup. No code changes are needed beyond selecting the rollup queue.
 
+**Audited twice:** the VRF program has had two independent security audits, by Zenith (August 2025) and ARDA (September 2026). See [Security and trust](#security-and-trust).
+
 **Start here:** read the [MagicBlock Solana VRF docs](https://docs.magicblock.gg/pages/verifiable-randomness-functions-vrfs/introduction/solana-vrf) for the end-to-end integration flow.
 
 ## Where it runs
@@ -16,7 +18,9 @@ The same program and SDK also work inside [MagicBlock Ephemeral Rollups](https:/
 ## Security and trust
 
 - **Onchain proof verification:** every fulfillment carries an RFC 9381 proof that the VRF program verifies onchain in [`ProvideRandomness`](program/src/provide_randomness.rs). An invalid proof fails with `InvalidProof` and the callback is never invoked, so consumers never need to trust the oracle.
-- **Audit:** [2025-08-06 VRF Program Audit Report by Zenith](security_audits/2025-08-06%20VRF%20Program%20Audit%20Report%20by%20Zenith.pdf).
+- **Two independent audits:**
+  - [2025-08-06 VRF Program Audit Report by Zenith](security_audits/2025-08-06%20VRF%20Program%20Audit%20Report%20by%20Zenith.pdf)
+  - [2026-09-06 VRF Program Audit Report by ARDA](security_audits/2026-09-06%20VRF%20Program%20Audit%20Report%20by%20ARDA.pdf)
 - **Standards-based design:** the implementation follows [RFC 9381](https://datatracker.ietf.org/doc/html/rfc9381), using Curve25519's Ristretto group and Schnorr-like proof verification.
 
 ## Examples
