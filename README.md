@@ -230,6 +230,14 @@ CLI for managing oracles. See all available commands with:
 cargo run --bin vrf-cli -- --help
 ```
 
+## Upgrading the program
+
+Upgrades go through a Squads multisig whose vault holds the upgrade authority. CI only proposes them.
+
+1. Run **Actions → Propose Program Upgrade** with the target `cluster` (start with `dry_run`). It builds the program verifiably, uploads a buffer and opens a Squads proposal that upgrades it and records its verified build.
+2. Members approve and execute it: on mainnet in the [Squads app](https://app.squads.so), on devnet with the [shared command-line tools](https://github.com/magicblock-labs/.github/tree/main/actions/squads-program-upgrade#approving-and-managing-the-multisig-devnet).
+3. **mainnet:** run **Actions → Verify Program (Remote)** so explorers show the program as verified. Every upgrade needs this step again.
+
 ## Example usage
 
 See the [integration test program](program/tests/integration/use-randomness/programs/use-randomness/src/lib.rs) for a minimal program-level example, or the [MagicBlock Engine examples repository](https://github.com/magicblock-labs/magicblock-engine-examples) for full app integrations.

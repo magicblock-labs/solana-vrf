@@ -1,0 +1,50 @@
+name: Propose Program Upgrade
+
+# Builds the VRF program verifiably and opens a Squads proposal that upgrades
+# it and records its otter-verify PDA. Members approve and execute in Squads.
+#
+# Each cluster is a GitHub environment named <cluster>-program-upgrade with:
+#   secrets   RPC_URL, SQUADS_PROPOSER_KEYPAIR (Initiate-only multisig member)
+#   variable  SQUADS_MULTISIG_PDA (multisig whose vault is the upgrade authority)
+
+on:
+  workflow_dispatch:
+    inputs:
+      cluster:
+        description: Target cluster
+        type: choice
+        options: [devnet, mainnet]
+        default: devnet
+      proposal_name:
+        description: Squads proposal memo
+        default: Upgrade VRF program
+      dry_run:
+        description: Build, upload and simulate only; close the buffer without proposing
+        type: boolean
+        default: false
+
+concurrency: program-upgrade-${{ inputs.cluster }}
+
+permissions:
+  contents: read
+
+jobs:
+  propose:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.cluster }}-program-upgrade
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: magicblock-labs/.github/actions/squads-program-upgrade@f230947fd85afe668cbea20b94766252a278cc85
+        with:
+          rpc-url: ${{ secrets.RPC_URL }}
+          proposer-keypair: ${{ secrets.SQUADS_PROPOSER_KEYPAIR }}
+          multisig: ${{ vars.SQUADS_MULTISIG_PDA }}
+          program-id: Vrf1RNUjXmQGjmQrQLvJHs9SNkvDJEsRVFPkfSQUwGz
+          library-name: solana_vrf_program
+          solana-version: v3.1.13
+          proposal-name: ${{ inputs.proposal_name }}
+          dry-run: ${{ inputs.dry_run }}
