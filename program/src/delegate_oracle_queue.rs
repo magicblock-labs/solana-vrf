@@ -56,12 +56,15 @@ pub fn process_delegate_oracle_queue(accounts: &[AccountInfo<'_>], data: &[u8]) 
     // be pulled into the rollup. A drained queue is not "unused": removed items
     // leave non-zero bytes behind, so the variable region is checked too.
     {
-        let data = oracle_queue_info.try_borrow_data()?;
+        let mut data = oracle_queue_info.try_borrow_mut_data()?;
         let queue = Queue::try_from_bytes(&data)?;
         let variable_region_start = 8 + core::mem::size_of::<Queue>();
         if queue.item_count != 0 || data[variable_region_start..].iter().any(|&b| b != 0) {
             return Err(SolanaVrfError::QueueAlreadyInUse.into());
         }
+        // Mark the queue before delegating, so the rollup's clone carries the
+        // mark and its requests move no fee.
+        QueueAccount::load(&mut data)?.header.ephemeral = 1;
     }
 
     // Delegate

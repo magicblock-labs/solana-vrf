@@ -80,7 +80,7 @@ pub fn process_request_randomness(
     let slot = Clock::get()?.slot;
     let time = Clock::get()?.unix_timestamp;
 
-    {
+    let fee_exempt = {
         // Borrow queue account data and load QueueAccount view
         let mut data = oracle_queue_info.try_borrow_mut_data()?;
         Queue::try_from_bytes(&data)?;
@@ -145,10 +145,11 @@ pub fn process_request_randomness(
                 .to_bytes()
             },
         )?;
-    }
+        crate::fees::is_fee_exempt_ephemeral_queue(oracle_queue_info.key, queue_acc.header)
+    };
 
     // Transfer request cost to the queue PDA (unless this is a fee-exempt ephemeral queue)
-    if !crate::fees::is_fee_exempt_ephemeral_queue(oracle_queue_info.key) {
+    if !fee_exempt {
         let cost = if high_priority {
             VRF_HIGH_PRIORITY_LAMPORTS_COST
         } else {
