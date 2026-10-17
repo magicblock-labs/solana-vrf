@@ -599,6 +599,30 @@ async fn delegated_queue_requests_move_no_fee() {
         provided.lamports, delegated.lamports,
         "the fulfilment paid a fee out"
     );
+
+    // An expired request is purged with no fee paid out either.
+    send(
+        &banks,
+        &[request_randomness_to_queue(payer.pubkey(), 8, queue)],
+        &[&payer],
+    )
+    .await;
+    let mut clock = banks.get_sysvar::<Clock>().await.unwrap();
+    clock.unix_timestamp += QUEUE_TTL_SECONDS as i64 + 1;
+    context.set_sysvar(&clock);
+    send(
+        &banks,
+        &[purge_expired_requests(oracle_keypair.pubkey(), 0)],
+        &[&payer],
+    )
+    .await;
+    let purged = banks.get_account(queue).await.unwrap().unwrap();
+    let mut data = purged.data.clone();
+    assert_eq!(QueueAccount::load(&mut data[..]).unwrap().len(), 0);
+    assert_eq!(
+        purged.lamports, delegated.lamports,
+        "the purge paid a fee out"
+    );
 }
 
 /// send signs with every signer, the first paying, and requires success.
