@@ -153,10 +153,12 @@ pub fn process_provide_randomness(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
         let metas = removed_item.account_metas(queue_acc.acc).to_vec();
         let disc = removed_item.callback_discriminator(queue_acc.acc).to_vec();
         let args_bytes = removed_item.callback_args(queue_acc.acc).to_vec();
-        (removed_item, metas, disc, args_bytes)
+        let fee_exempt =
+            crate::fees::is_fee_exempt_ephemeral_queue(oracle_queue_info.key, queue_acc.header);
+        (removed_item, metas, disc, args_bytes, fee_exempt)
     };
 
-    let (removed_item, metas_vec, disc_vec, args_vec) = removed_item_and_buf;
+    let (removed_item, metas_vec, disc_vec, args_vec, fee_exempt) = removed_item_and_buf;
 
     // Invoke the callback with randomness
     callback_program_info.has_address(&Pubkey::new_from_array(removed_item.callback_program_id))?;
@@ -212,7 +214,7 @@ pub fn process_provide_randomness(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
     }
 
     // Collect the fees (unless this is a fee-exempt ephemeral queue)
-    if !crate::fees::is_fee_exempt_ephemeral_queue(oracle_queue_info.key) {
+    if !fee_exempt {
         let cost = if removed_item.priority_request == 1 {
             VRF_HIGH_PRIORITY_LAMPORTS_COST
         } else {

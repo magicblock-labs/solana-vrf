@@ -4,12 +4,15 @@ use solana_program::pubkey::Pubkey;
 use solana_vrf_api::consts::DEFAULT_EPHEMERAL_QUEUE;
 #[cfg(feature = "ephemeral-test-queue")]
 use solana_vrf_api::consts::DEFAULT_EPHEMERAL_TEST_QUEUE;
+use solana_vrf_api::state::Queue;
 
-/// Whether `queue` is exempt from the per-request fee (and the matching oracle payout).
-/// `DEFAULT_EPHEMERAL_QUEUE` is always exempt; the local test queue only with the
-/// `ephemeral-test-queue` feature, so production builds never exempt it.
-pub fn is_fee_exempt_ephemeral_queue(queue: &Pubkey) -> bool {
-    if queue == &DEFAULT_EPHEMERAL_QUEUE {
+/// Whether the queue is exempt from request fees and matching oracle payouts.
+/// Queues delegated to ephemeral rollups are exempt because the rollup cannot
+/// transfer lamports from the requester or the confined queue.
+/// `DEFAULT_EPHEMERAL_QUEUE` is always exempt. The local test queue is exempt
+/// only when the `ephemeral-test-queue` feature is enabled.
+pub fn is_fee_exempt_ephemeral_queue(queue: &Pubkey, header: &Queue) -> bool {
+    if header.ephemeral != 0 || queue == &DEFAULT_EPHEMERAL_QUEUE {
         return true;
     }
     #[cfg(feature = "ephemeral-test-queue")]

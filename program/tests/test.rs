@@ -7,7 +7,7 @@ use solana_curve25519::ristretto::PodRistrettoPoint;
 use solana_curve25519::scalar::PodScalar;
 use solana_program::rent::Rent;
 use solana_program::sysvar::slot_hashes;
-use solana_program_test::{processor, read_file, ProgramTest, ProgramTestContext};
+use solana_program_test::{processor, read_file, BanksClient, ProgramTest, ProgramTestContext};
 use solana_sdk::account::Account;
 use solana_sdk::{pubkey, signature::Keypair, signer::Signer, transaction::Transaction};
 use solana_vrf::vrf::{compute_vrf, generate_vrf_keypair, verify_vrf};
@@ -512,6 +512,101 @@ async fn run_test() {
             .unwrap()
             .minimum_balance(oracles_data.len())
     );
+}
+
+// A queue delegated to an ephemeral rollup carries the ephemeral mark, and the
+// rollup's clone of it takes a request and fulfils it with no fee moving: a
+// rollup refuses a transaction that changes the lamports of an account it does
+// not hold, the requester's wallet or the confined queue.
+#[tokio::test]
+async fn delegated_queue_requests_move_no_fee() {
+    let mut context = setup().await;
+    let banks = context.banks_client.clone();
+    let authority_keypair = Keypair::try_from(&TEST_AUTHORITY[..]).unwrap();
+    let oracle_keypair = Keypair::try_from(&TEST_ORACLE[..]).unwrap();
+    let (oracle_vrf_sk, oracle_vrf_pk) = generate_vrf_keypair(&oracle_keypair);
+
+    let payer = context.payer.insecure_clone();
+    send(&banks, &[initialize(payer.pubkey())], &[&payer]).await;
+    let ix = add_oracle(
+        authority_keypair.pubkey(),
+        oracle_keypair.pubkey(),
+        oracle_vrf_pk.compress().to_bytes(),
+    );
+    send(&banks, &[ix], &[&authority_keypair]).await;
+    // Queue 0 is DEFAULT_TEST_QUEUE, the one the callback program accepts.
+    let ixs = initialize_oracle_queue(payer.pubkey(), oracle_keypair.pubkey(), 0, Some(10_000));
+    send(&banks, &ixs, &[&payer, &oracle_keypair]).await;
+    let queue = oracle_queue_pda(&oracle_keypair.pubkey(), 0).0;
+    let ix = delegate_oracle_queue(oracle_keypair.pubkey(), queue, 0);
+    send(&banks, &[ix], &[&oracle_keypair]).await;
+
+    let delegated = banks.get_account(queue).await.unwrap().unwrap();
+    assert_eq!(delegated.owner, DELEGATION_PROGRAM_ID);
+    let mut data = delegated.data.clone();
+    assert_eq!(
+        QueueAccount::load(&mut data[..]).unwrap().header.ephemeral,
+        1
+    );
+
+    // The rollup's clone: the same bytes and lamports, owned by this program.
+    context.set_account(
+        &queue,
+        &Account {
+            owner: solana_vrf_api::ID,
+            ..delegated.clone()
+        }
+        .into(),
+    );
+
+    send(
+        &banks,
+        &[request_randomness_to_queue(payer.pubkey(), 7, queue)],
+        &[&payer],
+    )
+    .await;
+    let requested = banks.get_account(queue).await.unwrap().unwrap();
+    let mut data = requested.data.clone();
+    let item = QueueAccount::load(&mut data[..])
+        .unwrap()
+        .get_item_by_index(0)
+        .unwrap()
+        .id;
+    assert_eq!(
+        requested.lamports, delegated.lamports,
+        "the request moved a fee"
+    );
+
+    let slot = banks.get_sysvar::<Clock>().await.unwrap().slot;
+    context.warp_to_slot(slot + 1).unwrap();
+    let (output, (commitment_base, commitment_hash, s)) = compute_vrf(oracle_vrf_sk, &item);
+    let provide = provide_randomness(
+        oracle_keypair.pubkey(),
+        queue,
+        TEST_CALLBACK_PROGRAM,
+        item,
+        PodRistrettoPoint(output.to_bytes()),
+        PodRistrettoPoint(commitment_base.to_bytes()),
+        PodRistrettoPoint(commitment_hash.to_bytes()),
+        PodScalar(s.to_bytes()),
+    );
+    let compute = ComputeBudgetInstruction::set_compute_unit_limit(2_000_000);
+    send(&banks, &[compute, provide], &[&oracle_keypair]).await;
+    let provided = banks.get_account(queue).await.unwrap().unwrap();
+    let mut data = provided.data.clone();
+    assert_eq!(QueueAccount::load(&mut data[..]).unwrap().len(), 0);
+    assert_eq!(
+        provided.lamports, delegated.lamports,
+        "the fulfilment paid a fee out"
+    );
+}
+
+/// send signs with every signer, the first paying, and requires success.
+async fn send(banks: &BanksClient, ixs: &[Instruction], signers: &[&Keypair]) {
+    let blockhash = banks.get_latest_blockhash().await.unwrap();
+    let tx =
+        Transaction::new_signed_with_payer(ixs, Some(&signers[0].pubkey()), signers, blockhash);
+    banks.process_transaction(tx).await.unwrap();
 }
 
 pub fn request_randomness(signer: Pubkey, client_seed: u8) -> Instruction {

@@ -21,7 +21,13 @@ pub struct Queue {
     /// can be drained and closed. 0 = active. Reuses former padding, so
     /// existing (zeroed) accounts read as active.
     pub paused: u8,
-    pub _padding: [u8; 2],
+    /// 1 if delegated to an ephemeral rollup. `DelegateOracleQueue` sets this
+    /// before delegation, and the rollup clone preserves it. Such rollups cannot
+    /// transfer lamports from accounts they do not hold, including the requester
+    /// wallet and confined queue, so queue requests and payouts incur no fee.
+    /// Reuses former padding; existing zero-initialized accounts default to 0.
+    pub ephemeral: u8,
+    pub _padding: [u8; 1],
 }
 
 /// Single queue entry. This is written into the variable region and
