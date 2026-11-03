@@ -238,7 +238,7 @@ cargo run --bin vrf-cli -- --help
 
 Upgrades go through a Squads multisig whose vault holds the upgrade authority. CI only proposes them.
 
-1. Run **Actions → Propose Program Upgrade** with the target `cluster` (start with `dry_run`). It builds the program verifiably, uploads a buffer and opens a Squads proposal that upgrades it and records its verified build.
+1. Run **Actions → Propose Program Upgrade** with the target `cluster` (start with `dry_run`). It builds the program verifiably, uploads a buffer and opens a Squads proposal that upgrades it and records its verified build. Set `ref` to a commit SHA, release tag or branch to build that source instead of the one the workflow is run from.
 2. Members approve and execute it: on mainnet in the [Squads app](https://app.squads.so), on devnet with the [shared command-line tools](https://github.com/magicblock-labs/.github/tree/main/actions/squads-program-upgrade#approving-and-managing-the-multisig-devnet).
 3. **mainnet:** run **Actions → Verify Program (Remote)** so explorers show the program as verified. Every upgrade needs this step again.
 
